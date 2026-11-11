@@ -1,0 +1,9 @@
+{
+  "file": "dist/wallpaper.html",
+  "title": "生命场 · 256",
+  "type": "web",
+  "description": "16:9 满屏像素壁纸，256 个可写预设与256 个固定随机种子，仅保留被替换预设。",
+  "general": {
+    "properties": {}
+  }
+}

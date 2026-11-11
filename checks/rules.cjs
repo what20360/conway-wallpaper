@@ -1,0 +1,12 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const html=fs.readFileSync('dist/index.html','utf8'),script=html.match(/<script>([\s\S]*?)<\/script>/)[1];new vm.Script(script);
+const W=256,H=180,L=W*H,scope={W,H,L,Uint8Array};vm.createContext(scope);
+vm.runInContext(script.split('\n').find(l=>l.startsWith('function evolve(')),scope);
+const make=pts=>{const c=new Uint8Array(L);for(const [x,y]of pts)c[((y+H)%H)*W+(x+W)%W]=1;return c;};
+const tick=c=>scope.evolve(c,new Uint8Array(L)),same=(a,b)=>assert.deepEqual(Array.from(a),Array.from(b));
+const block=make([[10,10],[11,10],[10,11],[11,11]]);same(tick(block),block);
+const blink=make([[10,11],[11,11],[12,11]]);same(tick(blink),make([[11,10],[11,11],[11,12]]));same(tick(tick(blink)),blink);
+same(tick(make([[255,0],[0,0],[1,0]])),make([[0,179],[0,0],[0,1]]));
+const pts=[[1,0],[2,1],[0,2],[1,2],[2,2]];let glider=make(pts);for(let i=0;i<4;i++)glider=tick(glider);same(glider,make(pts.map(([x,y])=>[x+1,y+1])));
+same(tick(make([])),make([]));same(tick(make([[4,4]])),make([]));
+console.log('PASS: B3/S23 simultaneous update; still life; oscillator; glider; toroidal boundaries; empty/lone cell.');
