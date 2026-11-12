@@ -5,11 +5,12 @@ import math
 from pathlib import Path
 import time
 import numpy as np
-from PySide6.QtCore import Qt,QTimer,QPoint,QRect,QRectF
-from PySide6.QtGui import QColor,QImage,QPainter,QPen
+from PySide6.QtCore import Qt,QTimer,QPoint,QRect,QRectF,QUrl
+from PySide6.QtGui import QColor,QImage,QPainter,QPen,QFont,QDesktopServices
 from PySide6.QtWidgets import QWidget,QFileDialog,QMessageBox
 from .model import W,H,SPEEDS,SPEED_LABELS,PALETTES,random_cells,default_cells,Clock
 from .formats import encode_life,decode_life
+from .logging_setup import LOGGER,log_dir
 
 PIXELS=json.loads(Path(__file__).with_name('pixels.json').read_text())
 GLYPHS=PIXELS['glyphs']; ICONS=PIXELS['icons']
@@ -28,6 +29,28 @@ THEMES['violet']={**THEMES['night'],'life':'#c7b0e6','clock':'#a9cae0'}
 THEMES['sand']={**THEMES['day'],'bg':'#eee5d2','panel':'#e6dac3','life':'#996b49'}
 THEMES['forest']={**THEMES['day'],'bg':'#dfe9df','panel':'#d0dfd2','life':'#386c50'}
 
+def speed_from_position(position,width):
+    return max(0,min(7,int(position*8/max(1,width))))
+
+def wifi_label(state):
+    if not state.get('wifi'):return '---'
+    name=state.get('ssid')
+    return name if name else ('[隐藏网络]' if name=='' else '---')
+
+def ssid_bitmap(name,width,height,color):
+    # Rasterize Unicode glyphs once at low resolution, then use exact 2x blocks.
+    scale=2;w=max(1,width//scale);h=max(1,height//scale)
+    image=QImage(w,h,QImage.Format.Format_ARGB32);image.fill(Qt.GlobalColor.transparent)
+    painter=QPainter(image);painter.setRenderHint(QPainter.RenderHint.TextAntialiasing,False)
+    font=QFont('Sans Serif');font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
+    clean=''.join(ch if ch.isprintable() else ' ' for ch in name)
+    for size in (8,7,6):
+        font.setPixelSize(size);painter.setFont(font)
+        if painter.fontMetrics().boundingRect(QRect(0,0,w,10000),Qt.TextFlag.TextWrapAnywhere,clean).height()<=h:break
+    painter.setPen(color)
+    painter.drawText(QRect(0,0,w,h),Qt.AlignmentFlag.AlignLeft|Qt.AlignmentFlag.AlignVCenter|Qt.TextFlag.TextWrapAnywhere,clean)
+    painter.end();return image.scaled(w*scale,h*scale,Qt.AspectRatioMode.IgnoreAspectRatio,Qt.TransformationMode.FastTransformation)
+
 def geometry(width,height):
     k=max(1,min(width//320,height//180))
     return k,(width-320*k)//2,(height-180*k)//2
@@ -37,7 +60,7 @@ class View(QWidget):
         super().__init__();self.m=model;self.store=store;self.system=system
         self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0
         self.page='bank';self.backup_index=0;self.preview=None;self._grid_cache=None
-        self.feedback=False;self.storage_failed=False;self.last_frame=time.monotonic();self.wall_time=time.time()
+        self._ssid_cache=None;self._ssid_rect=None;self.feedback=False;self.storage_failed=False;self.last_frame=time.monotonic();self.wall_time=time.time()
         self.setWindowTitle('生命场 · 原生实验版');self.setMinimumSize(640,360)
         self.setMouseTracking(True);self.resize(1280,720)
         self.timer=QTimer(self);self.timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -58,14 +81,20 @@ class View(QWidget):
         if name=='save' and self.m.mode=='random':message='请先切换到 P 预设模式再保存。'
         if not self.system.enabled:message='当前以 --no-system 或渲染模式运行，系统控制已禁用。'
         self.error(message or '这个功能当前不可用，请检查对应工具、服务和设备。')
+    def open_logs(self):
+        directory=log_dir()
+        if directory:QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+        else:self.error('当前渲染／测试模式没有启用文件日志。')
     def error(self,message):
+        LOGGER.error('UI notice: %s',message)
         print(message,flush=True)
         QMessageBox.warning(self,'生命场',message[:1600])
     def checkpoint(self):
         if not self.store:return
-        try:self.store.checkpoint(self.m);self.last_save=time.monotonic();self.storage_failed=False
+        try:self.store.checkpoint(self.m);self.last_save=time.monotonic();self.storage_failed=False;LOGGER.debug('Checkpoint saved generation=%s',self.m.generation)
         except Exception as exc:
             self.storage_failed=True
+            LOGGER.exception('Checkpoint save failed')
             print('检查点保存失败:',exc,flush=True)
         self.update()
     def changed(self):self.debounce.start();self.update()
@@ -198,6 +227,7 @@ class View(QWidget):
             for x in range(24,296,8):dot(x,y,2,t['line'])
         now=dt.datetime.fromtimestamp(self.wall_time)
         region('close',268,0,34,28,self.close);icon(275,3,'close',t['muted'],2)
+        region('logs',20,0,32,28,self.open_logs)
         dot(25,9,4,t['danger'] if self.storage_failed else t['life'])
         text(24,32,now.strftime('%H:%M'),7,t['clock']);text(296,67,now.strftime('%S'),3,t['clock'],True)
         text(24,104,now.strftime('%Y.%m.%d'),3,t['text'],font=DATE_GLYPHS);text(296,104,now.isoweekday(),3,t['clock'],True)
@@ -216,11 +246,14 @@ class View(QWidget):
         for y in range(6):
             for x in range(6):dot(258+x*5,229+y*5,4,t[('life','clock','speed','archive')[(x//3+2*(y//3))%4]])
         text(24,282,SPEED_LABELS[SPEEDS.index(self.m.speed)],2.5,t['speed'])
-        for i,label in enumerate(SPEED_LABELS):
-            x=24+i*34;region('speed'+str(i),x,313,30,45,lambda i=i:self.speed(i))
-            for y in range(3):
-                for xx in range(5):dot(x+xx*6,314+y*6,4,t['speed'] if i<=SPEEDS.index(self.m.speed) else t['off'])
-            text(x,340,label,1,t['muted'])
+        bar=rect(24,313,272,28)
+        region('speed-bar',24,313,272,28,lambda:self.speed(speed_from_position(self.hover.x()-bar.x(),bar.width())))
+        p.fillRect(bar,t['off']);selected=SPEEDS.index(self.m.speed)
+        for column in range(40):
+            x1=bar.x()+column*bar.width()//40;x2=bar.x()+(column+1)*bar.width()//40
+            for row in range(3):
+                y1=bar.y()+row*bar.height()//3;y2=bar.y()+(row+1)*bar.height()//3
+                p.fillRect(x1,y1,max(1,x2-x1-1),max(1,y2-y1-1),t['speed'] if column//5<=selected else t['off'])
         separator(374)
         if self.page=='bank':
             region('mode',24,388,48,48,self.toggle_mode)
@@ -259,7 +292,12 @@ class View(QWidget):
         region('volume-bar',90,685,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,685,206,36).x())/rect(90,685,206,36).width()))),volume is not None)
         for i in range(20):dot(92+i*10,696,7,t['clock'] if volume is not None and i<round(volume*20) else t['off'])
         toggle(24,737,state['wifi'],self.system.wifi,'wifi');toggle(99,737,state['bluetooth'],self.system.bluetooth,'bluetooth')
-        if self.system.busy:text(174,751,'...',2,t['speed'])
+        label=wifi_label(state);self._ssid_rect=rect(174,737,122,46)
+        key=(label,self._ssid_rect.width(),self._ssid_rect.height(),self.m.palette)
+        if not self._ssid_cache or self._ssid_cache[0]!=key:
+            self._ssid_cache=(key,ssid_bitmap(label,self._ssid_rect.width(),self._ssid_rect.height(),t['clock']))
+        p.drawImage(self._ssid_rect.topLeft(),self._ssid_cache[1])
+        if self.system.busy:dot(159,760,4,t['speed'])
         separator(789)
         button('clear',24,800,self.clear,False,'danger');button('brush',92,800,self.brush,self.m.brush>1)
         text(155,812,self.m.brush,3,t['life']);button('trail',190,800,self.trails,self.m.trails);button('full',249,800,self.fullscreen)
@@ -286,6 +324,8 @@ class View(QWidget):
             self.stroke=(cell,erase);self.m.paint(*cell,erase);self.update()
     def mouseMoveEvent(self,event):
         point=self._physical(event);self.hover=point
+        if self._ssid_rect and self._ssid_rect.contains(point):self.setToolTip(wifi_label(self.system.state))
+        else:self.setToolTip('')
         if self.stroke:
             cell=self._cell(point)
             if cell:

@@ -30,6 +30,15 @@ class Native(unittest.TestCase):
             # Preview background remains panel-colored, rather than inheriting the life brush.
             box=next(r for r,_,name in regions if name=='load')
             self.assertEqual(image.pixelColor(box.x()+5,box.y()+5),QColor('#0d1820'))
+    def test_continuous_speed_bar_mouse_selection(self):
+        self.view.resize(1280,720);self.view.render_image(1280,720)
+        bar=next(r for r,_,name in self.view.regions if name=='speed-bar')
+        self.assertFalse(any(name.startswith('speed') and name!='speed-bar' for _,_,name in self.view.regions))
+        from conway_desktop.model import SPEEDS
+        for i,speed in enumerate(SPEEDS):
+            point=QPointF(bar.x()+(i+.5)*bar.width()/8,bar.center().y())
+            event=QMouseEvent(QMouseEvent.Type.MouseButtonPress,point,point,Qt.MouseButton.LeftButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+            self.view.mousePressEvent(event);self.assertEqual(self.model.speed,speed)
     def test_shift_and_right_erase(self):
         self.view.resize(1280,720);self.view.render_image(1280,720)
         for button,modifier,alive in [(Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,1),(Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,0),(Qt.MouseButton.RightButton,Qt.KeyboardModifier.NoModifier,0)]:
@@ -49,13 +58,13 @@ class Native(unittest.TestCase):
     def test_command_parameters(self):
         calls=[]
         class Fake:
-            def run(self,key,args,callback):calls.append((key,args));return True
+            def run(self,key,args,callback,**kwargs):calls.append((key,args));return True
         self.system.enabled=True;self.system.commands=Fake()
         self.system.state.update(volume=.5,muted=False,wifi=True,bluetooth=False)
         self.system.volume(2);self.assertEqual(calls[-1][1],['wpctl','set-volume','@DEFAULT_AUDIO_SINK@','1','-l','1'])
         self.system.busy.clear();self.system.mute();self.assertEqual(calls[-1][1][-1],'toggle')
         self.system.wifi();self.assertEqual(calls[-1][1],['nmcli','radio','wifi','off'])
-        self.system.bluetooth();self.assertEqual(calls[-1][1],['bluetoothctl','power','on'])
+        self.system.bluetooth();self.assertEqual(calls[-1][1],['bluetoothctl','--timeout','8','power','on'])
         self.system.commands=Commands(self.system)
     def test_async_commands(self):
         from PySide6.QtCore import QEventLoop,QTimer

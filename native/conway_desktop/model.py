@@ -3,8 +3,8 @@ import time
 import numpy as np
 
 W, H = 256, 180
-SPEEDS = (.125, .25, .5, 1, 6, 12, 24, 40)
-SPEED_LABELS = ('1/8', '1/4', '1/2', '1', '6', '12', '24', '40')
+SPEEDS = (.125, .25, .5, 1, 2, 4, 8, 16)
+SPEED_LABELS = ('1/8', '1/4', '1/2', '1', '2', '4', '8', '16')
 PALETTES = ('night', 'ice', 'violet', 'day', 'sand', 'forest')
 
 def evolve(cells):
@@ -45,7 +45,7 @@ def random_cells(seed):
 class Model:
     def __init__(self):
         self.cells=default_cells(1); self.generation=0; self.running=False
-        self.speed=12; self.brush=1; self.palette='night'; self.mode='preset'
+        self.speed=8; self.brush=1; self.palette='night'; self.mode='preset'
         self.preset=1; self.seed=42; self.trails=True
         self.fade=np.zeros((H,W),dtype=np.float32)
     @property
@@ -72,7 +72,8 @@ class Model:
         n=settings.get('generation',0)
         self.generation=n if isinstance(n,int) and 0<=n<2**63 else 0
         self.running=settings.get('running') is True
-        self.speed=settings.get('speed') if settings.get('speed') in SPEEDS else 12
+        old_speed=settings.get('speed',8)
+        self.speed=max((s for s in SPEEDS if s<=old_speed),default=SPEEDS[0]) if isinstance(old_speed,(int,float)) and old_speed>0 else 8
         self.brush=settings.get('brush') if settings.get('brush') in (1,3,5) else 1
         self.palette=settings.get('palette') if settings.get('palette') in PALETTES else 'night'
         self.mode='random' if settings.get('mode')=='random' else 'preset'
@@ -82,7 +83,7 @@ class Model:
 
 class Clock:
     def __init__(self): self.reset()
-    def reset(self,wall=None,mono=None,speed=12):
+    def reset(self,wall=None,mono=None,speed=8):
         self.last_mono=time.monotonic() if mono is None else mono
         self.last_wall=time.time() if wall is None else wall
         self.bucket=int(self.last_wall*speed)

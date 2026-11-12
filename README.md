@@ -57,3 +57,5 @@ npm run build
 ## 原生桌面应用实验版
 
 新增 [native/](native/README.md)：原生 Qt/PySide6 窗口与全屏，面向 1920×1080 和 2560×1440，加入运行检查点、系统音量／静音、Wi-Fi、蓝牙与 KDE 明暗配色控制。先阅读 [方案](native/docs/DESIGN.md) 和 [操作手册](native/docs/MANUAL.md)。当前尚未实现 Wayland 背景层，也尚未在真实 Kubuntu 系统验证全部设备接口；网页版本继续保留。
+
+原生版 0.2 已加入已连接 Wi-Fi 名称、连续八挡速度条、蓝牙禁用检查和状态确认、轮换日志及只读诊断。[下载／更新脚本](native/update.sh)会验证新版后再切换，支持回退，不改动用户预设和检查点。

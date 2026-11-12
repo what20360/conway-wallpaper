@@ -1,19 +1,37 @@
-"""Small asynchronous adapters. Never uses shell=True or arbitrary command text."""
+"""Asynchronous OS controls, verified state and Bluetooth failure diagnostics."""
 import configparser
 import os
 from pathlib import Path
 import re
 import shutil
+import time
 from PySide6.QtCore import QObject,QProcess,QProcessEnvironment,QTimer,Signal
+from .logging_setup import LOGGER,redact
 
+
+def split_nmcli(line):
+    fields=[];current=[];escaped=False
+    for ch in line:
+        if escaped:current.append(ch);escaped=False
+        elif ch=='\\':escaped=True
+        elif ch==':':fields.append(''.join(current));current=[]
+        else:current.append(ch)
+    if escaped:current.append('\\')
+    fields.append(''.join(current));return fields
+
+def parse_active_ssid(text):
+    for line in text.splitlines():
+        fields=split_nmcli(line)
+        if len(fields)==2 and fields[0]=='yes':return fields[1]
+    return None
 
 def parse_volume(text):
     match=re.search(r'Volume:\s*([0-9.]+)',text)
-    if not match: raise ValueError('no default audio output')
+    if not match:raise ValueError('没有默认音频输出')
     return {'volume':float(match[1]),'muted':'[MUTED]' in text}
 
 def parse_wifi_devices(text):
-    return any('wifi' in line.split(':')[1:2] for line in text.splitlines())
+    return any(split_nmcli(line)[1:2]==['wifi'] for line in text.splitlines())
 
 def parse_wifi_state(text):
     parts=text.strip().split(':')
@@ -23,23 +41,47 @@ def parse_wifi_state(text):
 
 def parse_bluetooth(text):
     m=re.search(r'Powered:\s*(yes|no)',text)
-    if not m: raise ValueError('no Bluetooth controller')
+    if not m:raise ValueError('未找到蓝牙适配器')
     return m[1]=='yes'
 
+def bluez_error(text):
+    return bool(re.search(r'Failed to (?:set|connect)|org\.bluez\.Error\.|No default controller|No controller available',text,re.I))
+
+def read_rfkill(root=Path('/sys/class/rfkill')):
+    result=[]
+    try:
+        for entry in sorted(Path(root).glob('rfkill*')):
+            try:
+                if (entry/'type').read_text().strip()!='bluetooth':continue
+                result.append({'name':(entry/'name').read_text().strip(),
+                               'soft':(entry/'soft').read_text().strip()=='1',
+                               'hard':(entry/'hard').read_text().strip()=='1'})
+            except OSError:continue
+    except OSError:pass
+    return result
+
 class Commands(QObject):
-    def __init__(self,parent=None): super().__init__(parent); self.active={}
-    def run(self,key,args,callback):
-        if key in self.active: return False
+    def __init__(self,parent=None):super().__init__(parent);self.active={}
+    def run(self,key,args,callback,timeout_ms=3000):
+        if key in self.active:return False
         program=shutil.which(args[0])
-        if not program: callback(False,'缺少工具 '+args[0]); return False
-        process=QProcess(self); env=QProcessEnvironment.systemEnvironment();env.insert('LC_ALL','C');process.setProcessEnvironment(env);timer=QTimer(process); timer.setSingleShot(True)
-        self.active[key]=process; done=False
+        if not program:
+            LOGGER.debug('Command unavailable key=%s program=%s',key,args[0]);callback(False,'缺少工具 '+args[0]);return False
+        process=QProcess(self);env=QProcessEnvironment.systemEnvironment()
+        # Keep UTF-8 for network names while making command keywords predictable.
+        env.insert('LC_ALL','C.UTF-8');env.insert('TERM','dumb');env.insert('NO_COLOR','1')
+        process.setProcessEnvironment(env);timer=QTimer(process);timer.setSingleShot(True)
+        self.active[key]=process;done=False;started=time.monotonic()
+        LOGGER.debug('Command start key=%s argv=%s timeout_ms=%s',key,redact(args),timeout_ms)
         def finish(ok,error=''):
             nonlocal done
             if done:return
-            done=True; timer.stop()
-            output=bytes(process.readAllStandardOutput()).decode(errors='replace')
-            stderr=bytes(process.readAllStandardError()).decode(errors='replace')
+            done=True;timer.stop()
+            output=bytes(process.readAllStandardOutput()).decode('utf-8',errors='replace')
+            stderr=bytes(process.readAllStandardError()).decode('utf-8',errors='replace')
+            # SSIDs never enter the log, including in debug mode.
+            logged='<SSID output omitted>' if key=='read-ssid' else redact(output or stderr or error)
+            LOGGER.debug('Command end key=%s ok=%s elapsed_ms=%d output=%s',key,ok,int((time.monotonic()-started)*1000),logged)
             def cleanup():
                 if self.active.get(key) is process:self.active.pop(key,None)
                 process.deleteLater()
@@ -52,29 +94,37 @@ class Commands(QObject):
         process.finished.connect(lambda code,status:finish(code==0 and status==QProcess.ExitStatus.NormalExit))
         process.errorOccurred.connect(process_error)
         timer.timeout.connect(lambda:finish(False,'命令超时'))
-        process.start(program,args[1:]); timer.start(3000); return True
+        process.start(program,args[1:]);timer.start(timeout_ms);return True
     def stop(self):
-        for process in list(self.active.values()): process.kill(); process.waitForFinished(500)
+        for process in list(self.active.values()):process.kill();process.waitForFinished(500)
 
 class System(QObject):
-    changed=Signal(); notice=Signal(str)
+    changed=Signal();notice=Signal(str)
     def __init__(self,enabled=True,parent=None):
-        super().__init__(parent); self.enabled=enabled; self.commands=Commands(self)
-        self.state={'volume':None,'muted':None,'wifi':None,'bluetooth':None,'theme':None,'cpu':None,'memory':None}
-        self.errors={}; self.busy=set(); self._cpu=None; self.wifi_device=False
+        super().__init__(parent);self.enabled=enabled;self.commands=Commands(self)
+        self.state={'volume':None,'muted':None,'wifi':None,'ssid':None,'bluetooth':None,'theme':None,'cpu':None,'memory':None}
+        self.errors={};self.busy=set();self._cpu=None;self.wifi_device=False;self._bluetooth_token=0
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh)
-        if enabled: self.timer.start(); QTimer.singleShot(0,self.refresh)
+        if enabled:self.timer.start();QTimer.singleShot(0,self.refresh)
+    def _set_error(self,key,error):
+        if self.errors.get(key)!=error:LOGGER.warning('Read failure key=%s error=%s',key,'<SSID read failed>' if key=='ssid' else redact(error))
+        self.errors[key]=error
     def _read(self,key,args,parser):
         if key in self.busy:return
         def result(ok,out):
+            if not self.enabled:return
+            previous=self.state.get(key) if key!='audio' else (self.state['volume'],self.state['muted'])
             try:
                 if not ok:raise ValueError(out.strip())
                 value=parser(out)
                 if key=='audio':self.state.update(value)
                 else:self.state[key]=value
+                if key in self.errors:LOGGER.info('Read recovered key=%s',key)
                 self.errors.pop(key,None)
+                current=self.state.get(key) if key!='audio' else (self.state['volume'],self.state['muted'])
+                if current!=previous:LOGGER.info('State changed key=%s value=%s',key,'<SSID changed>' if key=='ssid' else current)
             except (ValueError,TypeError) as exc:
-                self.errors[key]=str(exc)
+                self._set_error(key,str(exc))
                 if key=='audio':self.state.update(volume=None,muted=None)
                 else:self.state[key]=None
             self.changed.emit()
@@ -83,7 +133,7 @@ class System(QObject):
         if not self.enabled:return
         try:
             numbers=[int(x) for x in Path('/proc/stat').read_text().splitlines()[0].split()[1:9]]
-            total=sum(numbers); idle=numbers[3]+numbers[4]
+            total=sum(numbers);idle=numbers[3]+numbers[4]
             if self._cpu and total>self._cpu[0]:self.state['cpu']=max(0,min(100,100*(1-(idle-self._cpu[1])/(total-self._cpu[0]))))
             self._cpu=(total,idle)
             memory={p[0].rstrip(':'):int(p[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(p:=line.split())>=2}
@@ -91,9 +141,12 @@ class System(QObject):
         except (OSError,ValueError,KeyError):pass
         self._read('audio',['wpctl','get-volume','@DEFAULT_AUDIO_SINK@'],parse_volume)
         def wifi_devices(out):
+            if not self.enabled:return
             self.wifi_device=parse_wifi_devices(out)
-            if not self.wifi_device:self.state['wifi']=None;self.errors['wifi']='没有无线网卡';self.changed.emit()
-            else:self._read('wifi',['nmcli','-t','-f','WIFI-HW,WIFI','general','status'],parse_wifi_state)
+            if not self.wifi_device:self.state.update(wifi=None,ssid=None);self._set_error('wifi','没有无线网卡');self.changed.emit()
+            else:
+                self._read('wifi',['nmcli','-t','-f','WIFI-HW,WIFI','general','status'],parse_wifi_state)
+                self._read('ssid',['nmcli','-t','-e','yes','-f','ACTIVE,SSID','device','wifi','list','--rescan','no'],parse_active_ssid)
         self.commands.run('devices',['nmcli','-t','-f','DEVICE,TYPE,STATE','device','status'],lambda ok,out:wifi_devices(out) if ok else self._wifi_error(out))
         self._read('bluetooth',['bluetoothctl','show'],parse_bluetooth)
         cfg=configparser.ConfigParser(interpolation=None)
@@ -104,12 +157,14 @@ class System(QObject):
         except (OSError,configparser.Error):self.state['theme']=None
         self.changed.emit()
     def _wifi_error(self,out):
-        self.state['wifi']=None;self.errors['wifi']=out;self.changed.emit()
+        self.state.update(wifi=None,ssid=None);self._set_error('wifi',out);self.changed.emit()
     def _action(self,key,args):
         if not self.enabled or key in self.busy:return
-        self.busy.add(key);self.changed.emit()
+        self.busy.add(key);self.changed.emit();LOGGER.info('Control requested key=%s argv=%s',key,redact(args))
         def result(ok,out):
+            if not self.enabled:return
             self.busy.discard(key)
+            LOGGER.info('Control result key=%s command_ok=%s detail=%s',key,ok,redact(out))
             if not ok:self.notice.emit(out.strip() or '操作失败')
             self.refresh();self.changed.emit()
         self.commands.run('set-'+key,args,result)
@@ -120,11 +175,53 @@ class System(QObject):
     def wifi(self):
         if self.state['wifi'] is not None:self._action('wifi',['nmcli','radio','wifi','off' if self.state['wifi'] else 'on'])
     def bluetooth(self):
-        if self.state['bluetooth'] is not None:self._action('bluetooth',['bluetoothctl','power','off' if self.state['bluetooth'] else 'on'])
+        if not self.enabled or self.state['bluetooth'] is None or 'bluetooth' in self.busy:return
+        target=not self.state['bluetooth'];self._bluetooth_token+=1;token=self._bluetooth_token
+        self.busy.add('bluetooth');self.changed.emit()
+        blocks=read_rfkill();LOGGER.info('Bluetooth requested target=%s rfkill=%s',target,blocks)
+        def live():return token==self._bluetooth_token
+        def fail(reason):
+            if not live():return
+            LOGGER.error('Bluetooth failed target=%s error=%s rfkill=%s',target,redact(reason),read_rfkill())
+            self.errors['bluetooth-action']=reason;self.busy.discard('bluetooth');self.refresh();self.changed.emit()
+            # Extra diagnostics run once on failure, not every two-second poll.
+            self.commands.run('bt-diagnostic',['bluetoothctl','show'],lambda ok,out:LOGGER.warning('Bluetooth adapter diagnostic ok=%s output=%s',ok,redact(out)))
+            self.notice.emit(reason+'\n\n已记录到日志；可点击左上角状态点打开日志目录。')
+        def verify(attempt=0):
+            if not live():return
+            def result(ok,out):
+                if not live():return
+                try:actual=parse_bluetooth(out) if ok else None
+                except ValueError:actual=None
+                LOGGER.info('Bluetooth readback target=%s actual=%s attempt=%s',target,actual,attempt)
+                if actual is target:
+                    self.state['bluetooth']=actual;self.errors.pop('bluetooth-action',None);self.busy.discard('bluetooth');self.changed.emit();LOGGER.info('Bluetooth confirmed powered=%s',actual)
+                elif attempt<3:QTimer.singleShot(400,lambda:verify(attempt+1))
+                else:fail('蓝牙命令已返回，但适配器没有进入目标状态。\n'+redact(out))
+            self.commands.run('bt-verify',['bluetoothctl','show'],result,timeout_ms=5000)
+        def power():
+            if not live():return
+            def result(ok,out):
+                if not live():return
+                LOGGER.info('Bluetooth power result command_ok=%s output=%s',ok,redact(out))
+                if not ok or bluez_error(out):fail(redact(out) or 'BlueZ 操作失败')
+                else:QTimer.singleShot(250,verify)
+            self.commands.run('bt-power',['bluetoothctl','--timeout','8','power','on' if target else 'off'],result,timeout_ms=10000)
+        if target and blocks and all(b['hard'] for b in blocks):
+            fail('蓝牙被硬件开关禁用，软件无法解除。请检查机身开关、飞行模式或 BIOS。');return
+        if target and any(b['soft'] for b in blocks):
+            def unblocked(ok,out):
+                if not live():return
+                LOGGER.info('Bluetooth rfkill unblock ok=%s output=%s',ok,redact(out))
+                if not ok:fail('蓝牙处于软件禁用状态，解除失败：\n'+redact(out)+'\n可先在 KDE 蓝牙设置中打开蓝牙，再重试。')
+                elif any(b['hard'] or b['soft'] for b in read_rfkill()):fail('蓝牙的无线禁用状态尚未解除，请检查系统蓝牙设置。')
+                else:power()
+            self.commands.run('bt-unblock',['rfkill','unblock','bluetooth'],unblocked)
+        else:power()
     def theme(self):
         target='BreezeDark' if self.state['theme']!='night' else 'BreezeLight'
         roots=[Path('/usr/share/color-schemes'),Path(os.environ.get('XDG_DATA_HOME',Path.home()/'.local/share'))/'color-schemes']
-        if not any((root/(target+'.colors')).exists() for root in roots):
-            self.notice.emit('未找到系统配色方案 '+target);return
+        if not any((root/(target+'.colors')).exists() for root in roots):self.notice.emit('未找到系统配色方案 '+target);return
         self._action('theme',['plasma-apply-colorscheme',target])
-    def stop(self):self.timer.stop();self.commands.stop()
+    def stop(self):
+        self.enabled=False;self._bluetooth_token+=1;self.timer.stop();self.commands.stop()
