@@ -53,3 +53,7 @@ npm run build
 修改 `dist/index.html` 或 `MANUAL.md` 后运行构建命令更新壁纸入口和 HTML 手册。推送至 main 后自动部署在线预览；Pull Request 只构建和校验，不发布。校验覆盖生命规则、16:9 布局、256 个种子、紧凑文件往返、损坏文件拒绝、预设覆盖备份和保存失败回滚。
 
 本项目尚未在真实 KDE 桌面壁纸宿主中实机验证；宿主的鼠标转发、文件选择、下载与浏览器存储策略会影响功能。
+
+## 原生桌面应用实验版
+
+新增 [native/](native/README.md)：原生 Qt/PySide6 窗口与全屏，面向 1920×1080 和 2560×1440，加入运行检查点、系统音量／静音、Wi-Fi、蓝牙与 KDE 明暗配色控制。先阅读 [方案](native/docs/DESIGN.md) 和 [操作手册](native/docs/MANUAL.md)。当前尚未实现 Wayland 背景层，也尚未在真实 Kubuntu 系统验证全部设备接口；网页版本继续保留。

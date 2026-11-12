@@ -1,0 +1,32 @@
+name: Native Qt prototype
+on:
+  push:
+    paths: ['native/**', '.github/workflows/native.yml']
+  pull_request:
+    paths: ['native/**', '.github/workflows/native.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install runtime
+        run: python -m pip install -r native/requirements.txt
+      - name: Rules, persistence, compatibility and native controls
+        run: python -m unittest discover -s native/tests -v
+      - name: Render target resolutions
+        run: |
+          python native/run.py --render /tmp/native-1080.png --resolution 1920x1080 --no-system
+          python native/run.py --render /tmp/native-1440.png --resolution 2560x1440 --no-system
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-qt-previews
+          path: /tmp/native-*.png
