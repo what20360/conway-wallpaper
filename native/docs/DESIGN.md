@@ -134,3 +134,10 @@ Plasma 6.6.6 的 Folder View 在壁纸上方接收空白桌面鼠标，Wallpaper
 前端在 status 请求中携带版本、逻辑尺寸、父项尺寸、DPR、图像尺寸与绘制状态。后台只保留最近八个不同布局报告，变化时记录日志；提供凭据保护的只读显示诊断端点，不包含凭据或输入文本。按键计数用于检查是否有事件到达。原有输入端点只增加固定 edit 命令，不开放任意执行。
 
 参考 KDE 6.6.6 FolderView.qml、ContainmentItem 的 WallpaperItem z 层与 Qt Item mapToItem API；行为仍需用户实际桌面验证，自动测试中的桌面拦截层不能替代完整 Plasma 会话。
+
+
+## 12. 0.3.3 状态反馈与活动缩略图
+
+蓝牙将 `pending` 目标与 `state` 已确认硬件状态分开：发起操作前先发 changed，帧修订签名包含 pending；图标立即显示目标，读回成功后清除 pending，失败则清除并回退。连接数量仍依赖实际 Powered／Connected 读数。三枚系统图标使用相同 7×7 像素网格和 28×28 设计尺寸，无独立大块背景，颜色表达状态。
+
+活动预览由 ActivityPreview 原子替换一个 0600 PNG，采用单调时钟限制到 30 秒一次，640×360 等比例缩小。WallPaperItem 在状态响应带来新 URL 时更新自身 `configuration.Image` 并调用 `writeConfig()`；配置增加 KConfig General/Image 字符串。失败保留旧预览，不中断实时壁纸，诊断暴露生成错误。URL 片段变化用于刷新 Qt 图像缓存，实际文件路径固定。KIO 对本地图片按规范路径生成缩略图缓存键；研究依据和限制见 ACTIVITY-PREVIEW.md。

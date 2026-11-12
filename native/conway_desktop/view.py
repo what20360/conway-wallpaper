@@ -23,7 +23,7 @@ GLYPHS.update({'中':{'w':9,'r':[16,16,511,273,273,511,16,16,16]},
 DATE_GLYPHS=json.loads(Path(__file__).with_name('date-pixels.json').read_text())
 ICONS.update({
  'close':['1000001','0100010','0010100','0001000','0010100','0100010','1000001'],
- 'wifi':['0111110','1000001','0011100','0100010','0000000','0001000'],
+ 'wifi':['0111110','1000001','0011100','0100010','0001000','0001000','0000000'],
  'bluetooth':['0001000','0001100','0101010','0011100','0011100','0101010','0001100'],
  'volume':['0001000','0011001','1111010','1111010','1111010','0011001','0001000'],
  'mute':['0001000','0011000','1111011','1111000','1111011','0011000','0001000']})
@@ -237,24 +237,22 @@ class View(QWidget):
                     p.fillRect(px,py,5,2,t['line']);p.fillRect(px,py,2,5,t['line'])
         def button(name,x,y,action,on=False,color='life',enabled=True):
             region(name,x,y,48,48,action,enabled);icon(x+13,y+13,name,t[color] if on and enabled else t['muted'] if enabled else t['off'])
-        def toggle(x,y,value,action,name):
-            region(name,x,y,58,58 if name=='bluetooth' else 48,lambda:action() if name not in self.system.busy else None,value is not None)
-            # Large tile + thumb position distinguish power even without relying on hue.
-            p.fillRect(rect(x,y,58,43),t['life'] if value else t['off'])
-            ink=t['panel'] if value else t['muted']
-            icon(x+19,y+3,name,ink,3)
-            p.fillRect(rect(x+7,y+29,44,10),t['panel'] if value else t['line'])
-            p.fillRect(rect(x+(35 if value else 9),y+31,14,6),t['life'] if value else t['muted'])
-            if name in self.system.busy:p.fillRect(rect(x,y,58,4),t['speed'])
-            if value is None:text(x+25,y+8,'?',2,t['muted'])
+        def status_icon(name,x,y,value,action,glyph=None):
+            key='audio' if name in ('mute','volume') else name
+            region(name,x,y,48,58 if name=='bluetooth' else 48,lambda:action() if key not in self.system.busy else None,value is not None)
+            ink=t['muted'] if value is None else t['life'] if value else t['danger']
+            # Same 7x7 block grid and 28x28 glyph box; no solid tile or slider.
+            icon(x+10,y+10,glyph or name,ink,4)
+            if key in self.system.busy:dot(x+41,y+38,3,t['speed'])
+            if value is None and name!='bluetooth':text(x+40,y+3,'?',1.8,t['muted'])
             if name=='bluetooth':
-                count=self.system.state.get('connected') if value is not False else 0
-                text(x+45,y+5,'?' if count is None else '+' if count>5 else count,1.8,ink)
+                count=self.system.state.get('connected') if self.system.state['bluetooth'] is not False else 0
+                text(x+40,y+3,'?' if count is None else '+' if count>5 else count,1.8,ink)
                 for i in range(5):
                     # Five large outlined cells stay visible at zero; filled cells
-                    # indicate connections, independently of the power thumb above.
-                    p.fillRect(rect(x+1+i*11,y+46,10,11),t['muted'] if count is not None else t['line'])
-                    p.fillRect(rect(x+2+i*11,y+47,8,9),t['clock'] if count is not None and i<count else t['panel'])
+                    # indicate connections, independently of the power glyph above.
+                    p.fillRect(rect(x-4+i*11,y+46,10,11),t['muted'] if count is not None else t['line'])
+                    p.fillRect(rect(x-3+i*11,y+47,8,9),t['clock'] if count is not None and i<count else t['panel'])
         def separator(y):
             for x in range(24,296,8):dot(x,y,2,t['line'])
         now=dt.datetime.fromtimestamp(self.wall_time)
@@ -346,15 +344,11 @@ class View(QWidget):
         separator(671)
         state=self.system.state;volume=state['volume']
         muted=state['muted'] is True
-        if muted:p.fillRect(rect(24,682,48,48),t['danger'])
-        region('mute' if muted else 'volume',24,682,48,48,self.system.mute,volume is not None)
-        icon(37,695,'volume',t['panel'] if muted else t['clock'] if volume is not None else t['off'])
-        if muted:
-            # A broad diagonal crosses the entire speaker tile, not a few icon pixels.
-            for i in range(9):p.fillRect(rect(29+i*4,687+i*4,6,6),t['panel'])
+        status_icon('mute' if muted else 'volume',24,682,None if state['muted'] is None else not muted,self.system.mute,'volume')
         region('volume-bar',90,685,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,685,206,36).x())/rect(90,685,206,36).width()))),volume is not None)
         for i in range(20):dot(92+i*10,696,7,t['line'] if muted else t['clock'] if volume is not None and i<round(volume*20) else t['off'])
-        toggle(24,732,state['wifi'],self.system.wifi,'wifi');toggle(99,732,state['bluetooth'],self.system.bluetooth,'bluetooth')
+        status_icon('wifi',24,732,state['wifi'],self.system.wifi)
+        status_icon('bluetooth',99,732,self.system.pending.get('bluetooth',state['bluetooth']),self.system.bluetooth)
         label=wifi_label(state);self._ssid_rect=rect(174,737,122,46)
         key=(label,self._ssid_rect.width(),self._ssid_rect.height(),self.m.palette)
         if not self._ssid_cache or self._ssid_cache[0]!=key:

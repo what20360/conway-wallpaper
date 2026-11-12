@@ -133,7 +133,7 @@ class System(QObject):
         super().__init__(parent);self.enabled=enabled;self.commands=Commands(self)
         self.state={'volume':None,'muted':None,'wifi':None,'ssid':None,'bluetooth':None,'connected':None,'theme':None,'cpu':None,'memory':None,'download':None,'upload':None,'ime':None,'punctuation':None}
         self.network=NetworkRates();self._network_wall=None
-        self.errors={};self.busy=set();self._cpu=None;self.wifi_device=False;self._bluetooth_token=0
+        self.errors={};self.busy=set();self.pending={};self._cpu=None;self.wifi_device=False;self._bluetooth_token=0
         from .ime import Fcitx
         self.ime=Fcitx(self)
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh)
@@ -227,13 +227,15 @@ class System(QObject):
     def bluetooth(self):
         if not self.enabled or self.state['bluetooth'] is None or 'bluetooth' in self.busy:return
         target=not self.state['bluetooth'];self._bluetooth_token+=1;token=self._bluetooth_token
-        self.busy.add('bluetooth');self.changed.emit()
+        # Paint the user's target immediately. Keep confirmed hardware state
+        # separate so a slow or failed BlueZ request can be shown honestly.
+        self.pending['bluetooth']=target;self.busy.add('bluetooth');self.changed.emit()
         blocks=read_rfkill();LOGGER.info('Bluetooth requested target=%s rfkill=%s',target,blocks)
         def live():return token==self._bluetooth_token
         def fail(reason):
             if not live():return
             LOGGER.error('Bluetooth failed target=%s error=%s rfkill=%s',target,redact(reason),read_rfkill())
-            self.errors['bluetooth-action']=reason;self.busy.discard('bluetooth');self.refresh();self.changed.emit()
+            self.errors['bluetooth-action']=reason;self.pending.pop('bluetooth',None);self.busy.discard('bluetooth');self.refresh();self.changed.emit()
             # Extra diagnostics run once on failure, not every two-second poll.
             self.commands.run('bt-diagnostic',['bluetoothctl','show'],lambda ok,out:LOGGER.warning('Bluetooth adapter diagnostic ok=%s output=%s',ok,redact(out)))
             self.notice.emit(reason+'\n\n已记录到日志；可点击左上角状态点打开日志目录。')
@@ -245,7 +247,7 @@ class System(QObject):
                 except ValueError:actual=None
                 LOGGER.info('Bluetooth readback target=%s actual=%s attempt=%s',target,actual,attempt)
                 if actual is target:
-                    self.state['bluetooth']=actual;self.errors.pop('bluetooth-action',None);self.busy.discard('bluetooth');self.changed.emit();LOGGER.info('Bluetooth confirmed powered=%s',actual)
+                    self.state['bluetooth']=actual;self.pending.pop('bluetooth',None);self.errors.pop('bluetooth-action',None);self.busy.discard('bluetooth');self.changed.emit();LOGGER.info('Bluetooth confirmed powered=%s',actual)
                     self._refresh_connected()
                 elif attempt<3:QTimer.singleShot(400,lambda:verify(attempt+1))
                 else:fail('蓝牙命令已返回，但适配器没有进入目标状态。\n'+redact(out))

@@ -143,11 +143,31 @@ class WallpaperBridge(unittest.TestCase):
         for width,height in ((1920,1080),(2560,1440)):
             for count in range(6):
                 self.system.state['connected']=count;image=self.view.render_image(width,height)
-                box=next(r for r,_,name in self.view.regions if name=='bluetooth');unit=box.width()/58
+                box=next(r for r,_,name in self.view.regions if name=='bluetooth');unit=box.width()/48
                 for i in range(5):
-                    x=round(box.x()+(6+i*11)*unit);y=round(box.y()+51*unit)
+                    x=round(box.x()+(1+i*11)*unit);y=round(box.y()+51*unit)
                     color=QColor(THEMES[self.model.palette]['clock' if i<count else 'panel'])
                     self.assertEqual(image.pixelColor(x,y),color,(width,count,i))
+    def test_status_icons_share_color_states_without_solid_backgrounds(self):
+        from conway_desktop.view import THEMES
+        from PySide6.QtGui import QColor
+        palette=THEMES[self.model.palette]
+        for active in (True,False):
+            self.system.state.update(volume=.5,muted=not active,wifi=active,bluetooth=active,connected=0)
+            image=self.view.render_image(2560,1440)
+            pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
+            for name in ('volume' if active else 'mute','wifi','bluetooth'):
+                box=next(r for r,_,n in self.view.regions if n==name);unit=box.width()/48
+                # No colored tile at the button corner; the whole glyph carries state.
+                self.assertEqual(image.pixelColor(round(box.x()+3*unit),round(box.y()+3*unit)),QColor(palette['panel']))
+                ink=QColor(palette['life' if active else 'danger']).rgba()
+                body=pixels[box.y():box.y()+round(45*unit),box.x():box.x()+box.width()]
+                self.assertGreater(np.count_nonzero(body==ink),100)
+        self.system.pending['bluetooth']=True;self.system.busy.add('bluetooth')
+        image=self.view.render_image(2560,1440);box=next(r for r,_,n in self.view.regions if n=='bluetooth')
+        pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
+        self.assertGreater(np.count_nonzero(pixels[box.y():box.y()+60,box.x():box.x()+box.width()]==QColor(palette['life']).rgba()),100)
+        self.assertIs(self.system.state['bluetooth'],False)
     def wait_until(self,predicate,timeout=6000):
         if predicate():return
         loop=QEventLoop();poll=QTimer(loop);poll.setInterval(10)
@@ -162,7 +182,7 @@ class WallpaperBridge(unittest.TestCase):
         from PySide6.QtQuick import QQuickWindow
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=Path(__file__).parents[1]/'plasma-wallpaper/contents/ui'
-            qml=(source/'main.qml').read_text().replace('import org.kde.plasma.plasmoid','').replace('WallpaperItem {','Item {',1)
+            qml=(source/'main.qml').read_text().replace('import org.kde.plasma.plasmoid','').replace('WallpaperItem {','Item {\n property var configuration: ({Image: \"\", writeCount: 0, writeConfig: function() { this.writeCount += 1 }})',1)
             qml=qml.replace('import org.kde.plasma.core as PlasmaCore','import QtQuick.Controls as PlasmaCore').replace('contextualActions: [','property list<QtObject> contextualActions: [',1)
             qml=qml.replace('readonly property real ratio: Screen.devicePixelRatio || 1','readonly property real ratio: '+str(ratio))
             (root/'main.qml').write_text(qml)
@@ -247,6 +267,20 @@ class WallpaperBridge(unittest.TestCase):
         self.assertEqual(info['backendVersion'],VERSION);self.assertEqual(info['clients'][-1]['logicalW'],1970)
         self.assertEqual(info['clients'][-1]['sourceH'],1440);self.assertNotIn(self.server.token,data.decode())
         self.assertEqual(self.request('/status?frontend='+VERSION+'&logicalW=nan')[0],400)
+    def test_activity_snapshot_path_is_published_to_own_wallpaper_config(self):
+        from conway_desktop.preview import ActivityPreview
+        with tempfile.TemporaryDirectory() as folder:
+            now=[0];self.server.preview=ActivityPreview(folder,clock=lambda:now[0])
+            with self.presentation(1280,720,2) as (item,frame):
+                def configured():return item.property('configuration').property('Image').toString()
+                self.wait_until(lambda:bool(configured()))
+                first=configured();url=QUrl(first)
+                self.assertEqual(QImage(url.toLocalFile()).size().width(),640)
+                self.assertEqual(QImage(url.toLocalFile()).size().height(),360)
+                self.assertGreaterEqual(item.property('configuration').property('writeCount').toInt(),1)
+                now[0]=31;self.server.preview.update(self.view.render_image(2560,1440))
+                self.wait_until(lambda:configured()!=first)
+                self.assertEqual(len(list(Path(folder).glob('*.png'))),1)
     def test_qml_presentation_fetches_native_frame_and_forwards_controls(self):
         # Test actual QML presentation with an Item root. The Plasma-specific import
         # and containment/desktop input routing require a real Plasma 6 session.
@@ -254,7 +288,7 @@ class WallpaperBridge(unittest.TestCase):
         from PySide6.QtQuick import QQuickWindow
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);source=Path(__file__).parents[1]/'plasma-wallpaper/contents/ui'
-            qml=(source/'main.qml').read_text().replace('import org.kde.plasma.plasmoid','').replace('WallpaperItem {','Item {',1)
+            qml=(source/'main.qml').read_text().replace('import org.kde.plasma.plasmoid','').replace('WallpaperItem {','Item {\n property var configuration: ({Image: \"\", writeCount: 0, writeConfig: function() { this.writeCount += 1 }})',1)
             qml=qml.replace('import org.kde.plasma.core as PlasmaCore','import QtQuick.Controls as PlasmaCore').replace('contextualActions: [','property list<QtObject> contextualActions: [',1)
             (root/'main.qml').write_text(qml)
             (root/'Connection.qml').write_text('import QtQml\nQtObject { readonly property string token: "'+self.server.token+'"; readonly property string endpoint: "'+self.url+'" }')

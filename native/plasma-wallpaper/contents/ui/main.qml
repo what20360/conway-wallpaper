@@ -5,7 +5,7 @@ import org.kde.plasma.core as PlasmaCore
 
 WallpaperItem {
     id: root
-    readonly property string frontendVersion: "0.3.2"
+    readonly property string frontendVersion: "0.3.3"
     // Source resolution and the Item's logical display size are separate contracts.
     readonly property real ratio: Screen.devicePixelRatio || 1
     readonly property real renderScale: Math.min(Math.max(ratio, 640 / Math.max(1,width), 360 / Math.max(1,height)),
@@ -116,6 +116,10 @@ WallpaperItem {
                 const revision = status.revision
                 root.reloadRequired = !!status.reloadRequired || status.backendVersion !== root.frontendVersion
                 root.editing = !!status.editing
+                if (status.previewImage && root.configuration && root.configuration.Image !== status.previewImage) {
+                    root.configuration.Image = status.previewImage
+                    root.configuration.writeConfig()
+                }
                 if (revision === root.lastRevision && root.lastWidth === root.pixelWidth && root.lastHeight === root.pixelHeight) {
                     root.connected = true; root.fetching = false; return
                 }

@@ -88,6 +88,18 @@ class SystemFeatures(unittest.TestCase):
         self.system.refresh_bluetooth();self.system._bluetooth_token+=1
         callbacks[0](True,'Powered: yes')
         self.assertIs(self.system.state['bluetooth'],False);self.assertEqual(self.system.state['connected'],0)
+    def test_slow_bluetooth_changes_target_immediately_and_failure_rolls_back(self):
+        callbacks={}
+        class Delayed:
+            def run(self,key,args,callback,**kwargs):callbacks[key]=callback;return True
+            def stop(self):pass
+        self.system.commands=Delayed();self.system.state['bluetooth']=False
+        with patch('conway_desktop.system.read_rfkill',return_value=[]):self.system.bluetooth()
+        self.assertIs(self.system.pending['bluetooth'],True)
+        self.assertIs(self.system.state['bluetooth'],False);self.assertIn('bluetooth',self.system.busy)
+        callbacks['bt-power'](False,'Failed to set power on: org.bluez.Error.Failed')
+        self.assertNotIn('bluetooth',self.system.pending);self.assertIs(self.system.state['bluetooth'],False)
+        self.assertNotIn('bluetooth',self.system.busy);self.assertTrue(self.notices)
 
 class DisplayAndLogging(unittest.TestCase):
     def test_ssid_escaping_case_and_unicode(self):

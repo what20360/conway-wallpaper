@@ -75,7 +75,7 @@ def main(argv=None):
     if args.wallpaper:
         try:
             install_plugin(path)
-            window.wallpaper_mode=True;server=WallpaperServer(window,private_token(path))
+            window.wallpaper_mode=True;server=WallpaperServer(window,private_token(path),data_dir=path)
         except Exception as exc:
             LOGGER.exception('Wallpaper startup failed');print('壁纸后台启动失败：',exc,file=sys.stderr)
             window.wallpaper_mode=False;window.close();store.close();lock.unlock();return 1

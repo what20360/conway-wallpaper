@@ -79,11 +79,13 @@ def install_plugin(data,check_plasma=True):
     return destination
 
 class WallpaperServer(QObject):
-    def __init__(self,view,token,port=PORT,parent=None):
+    def __init__(self,view,token,port=PORT,parent=None,data_dir=None):
         super().__init__(parent);self.view=view;self.token=token;self.pending={};self.sockets=set();self.cache=None
         self._signature=None;self._revision=0
         self.display_clients=OrderedDict()
         self.input_counts={};self.last_input=None
+        from .preview import ActivityPreview
+        self.preview=ActivityPreview(data_dir) if data_dir is not None else None
         self.server=QTcpServer(self)
         if not self.server.listen(QHostAddress('127.0.0.1'),port):raise RuntimeError('壁纸后台端口被占用：'+self.server.errorString())
         self.server.newConnection.connect(self.accept)
@@ -135,14 +137,17 @@ class WallpaperServer(QObject):
                 client=self.record_display(query)
                 self.reply(socket,200,json.dumps({'revision':self.revision(),'backendVersion':VERSION,
                                                  'reloadRequired':client['frontendVersion']!=VERSION,
-                                                 'editing':self.view.desktop_editing}).encode())
+                                                 'editing':self.view.desktop_editing,
+                                                 'previewImage':self.preview.url if self.preview else ''}).encode())
             elif method=='GET' and url.path=='/display-info':
                 self.reply(socket,200,json.dumps(self.display_info()).encode())
             elif method=='GET' and url.path=='/frame':
                 w=int(query.get('w',['1920'])[0]);h=int(query.get('h',['1080'])[0]);self.dimensions(w,h)
                 # Coalesce simultaneous consumers, without keeping historical images.
                 key=(w,h,self.revision())
-                if not self.cache or self.cache[0]!=key:self.cache=(key,encode_frame(self.view.render_image(w,h)))
+                if not self.cache or self.cache[0]!=key:
+                    frame=self.view.render_image(w,h);self.cache=(key,encode_frame(frame))
+                    if self.preview:self.preview.update(frame)
                 self.reply(socket,200,self.cache[1],'image/png')
             elif method=='POST' and url.path=='/input':
                 event=json.loads(bytes(data[marker+4:marker+4+length]))
@@ -173,6 +178,7 @@ class WallpaperServer(QObject):
         from PySide6.QtGui import QGuiApplication
         return {'backendVersion':VERSION,'clients':list(self.display_clients.values()),
                 'inputCounts':self.input_counts,'lastInput':self.last_input,
+                'activityPreview':{'image':self.preview.url,'error':self.preview.error} if self.preview else None,
                 'nativeWindowLogicalSize':[self.view.width(),self.view.height()],
                 'nativeWindowDpr':self.view.devicePixelRatioF(),
                 'screens':[{'logicalSize':[screen.size().width(),screen.size().height()],
@@ -182,7 +188,7 @@ class WallpaperServer(QObject):
         view=self.view;m=view.m
         fade=zlib.crc32((m.fade/.15).astype(np.uint8).tobytes()) if m.trails else 0
         signature=(tuple(m.settings().items()),zlib.crc32(m.cells.tobytes()),fade,int(view.wall_time),view.desktop_editing,
-                   tuple(view.system.state.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
+                   tuple(view.system.state.items()),tuple(view.system.pending.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
                    zlib.crc32(view.preview.tobytes()) if view.preview is not None else 0,
                    view.hover.x() if view.hover else None,view.hover.y() if view.hover else None,
                    view.storage_failed)

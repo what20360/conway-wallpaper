@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0">
+  <kcfgfile name=""/>
+  <group name="General">
+    <entry name="Image" type="String">
+      <label>Local snapshot for Plasma activity previews</label>
+      <default></default>
+    </entry>
+  </group>
+</kcfg>
