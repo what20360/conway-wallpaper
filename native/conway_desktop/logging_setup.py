@@ -14,6 +14,7 @@ LOG_FILE = None
 def redact(value):
     value = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', str(value))
     value = re.sub(r'(?i)\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b', '<MAC>', value)
+    value = re.sub(r'(?i)(token=|Bearer )[a-z0-9]+',r'\1<redacted>',value)
     return value[:2000]
 
 class PrivateHandler(RotatingFileHandler):

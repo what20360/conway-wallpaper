@@ -32,7 +32,7 @@ LOG=logging.getLogger('update')
 
 def download(url,target,limit=64*1024*1024):
     LOG.info('Download source url=%s',url)
-    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.2.1','Accept':'application/zip, */*'})
+    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.3.0','Accept':'application/zip, */*'})
     with urllib.request.urlopen(request,timeout=30) as response,open(target,'wb') as out:
         size=0
         while chunk:=response.read(1024*1024):
@@ -167,6 +167,7 @@ def launchers(root,home):
     apps=home/'.local/share/applications';apps.mkdir(parents=True,exist_ok=True)
     executable=str(directory/'conway-desktop').replace('\\','\\\\').replace('"','\\"').replace('`','\\`').replace('$','\\$')
     (apps/'conway-desktop.desktop').write_text('[Desktop Entry]\nType=Application\nName=生命场\nComment=像素生命场与系统控制\nExec="'+executable+'"\nIcon=applications-graphics\nTerminal=false\nCategories=Utility;\n')
+    (apps/'conway-wallpaper.desktop').write_text('[Desktop Entry]\nType=Application\nName=生命场壁纸后台\nComment=启动 Plasma 6 原生壁纸服务\nExec="'+executable+'" --wallpaper\nIcon=preferences-desktop-wallpaper\nTerminal=false\nCategories=Utility;\n')
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description='生命场一键安装／更新；不修改应用数据')
@@ -198,7 +199,7 @@ def main(argv=None):
                     release=prepare(root,sha,archive,args.repair)
         launchers(root,Path.home());activate(root,release);LOG.info('Activated release=%s',release.name)
     print('已准备版本：'+release.name+'\n启动：'+str(Path.home()/'.local/bin/conway-desktop')+'\n再次更新：'+str(Path.home()/'.local/bin/conway-desktop-update')+'\n安装日志：'+str(root/'update.log'))
-    print('预设和检查点未改动。已运行的窗口需关闭后重新打开，才使用新版。')
+    print('预设和检查点未改动。普通窗口需关闭后重开；壁纸模式须从托盘退出后台再启动，才使用新版。')
     if args.run:subprocess.Popen([str(Path.home()/'.local/bin/conway-desktop')],start_new_session=True)
     return 0
 

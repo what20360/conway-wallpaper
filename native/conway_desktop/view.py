@@ -14,10 +14,16 @@ from .logging_setup import LOGGER,log_dir
 
 PIXELS=json.loads(Path(__file__).with_name('pixels.json').read_text())
 GLYPHS=PIXELS['glyphs']; ICONS=PIXELS['icons']
+GLYPHS['%']={'w':5,'r':[25,26,2,4,8,11,19]}
+GLYPHS.update({'中':{'w':9,'r':[16,16,511,273,273,511,16,16,16]},
+               '英':{'w':9,'r':[68,511,68,16,254,146,254,40,68,387]},
+               '，':{'w':3,'r':[0,0,0,3,3,2,4]},
+               '。':{'w':5,'r':[0,0,0,14,17,17,14]},
+               ',':{'w':3,'r':[0,0,0,0,3,2,4]}})
 DATE_GLYPHS=json.loads(Path(__file__).with_name('date-pixels.json').read_text())
 ICONS.update({
  'close':['1000001','0100010','0010100','0001000','0010100','0100010','1000001'],
- 'wifi':['0011100','0100010','1000001','0011100','0100010','0001000','0001000'],
+ 'wifi':['0111110','1000001','0011100','0100010','0000000','0001000'],
  'bluetooth':['0001000','0001100','0101010','0011100','0011100','0101010','0001100'],
  'volume':['0001000','0011001','1111010','1111010','1111010','0011001','0001000'],
  'mute':['0001000','0011000','1111011','1111000','1111011','0011000','0001000']})
@@ -31,6 +37,14 @@ THEMES['forest']={**THEMES['day'],'bg':'#dfe9df','panel':'#d0dfd2','life':'#386c
 
 def speed_from_position(position,width):
     return max(0,min(7,int(position*8/max(1,width))))
+
+def percent_label(value):return '--%' if value is None else f'{max(0,min(100,round(value)))}%'
+
+def rate_label(value):
+    if value is None:return '---'
+    value=max(0,int(value))
+    for divisor,unit in ((1024*1024,'M'),(1024,'K'),(1,'B')):
+        if value>=divisor or divisor==1:return str(value//divisor)+unit
 
 def wifi_label(state):
     if not state.get('wifi'):return '---'
@@ -58,8 +72,8 @@ def geometry(width,height):
 class View(QWidget):
     def __init__(self,model,store,system):
         super().__init__();self.m=model;self.store=store;self.system=system
-        self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0
-        self.page='bank';self.backup_index=0;self.preview=None;self._grid_cache=None
+        self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0;self.wallpaper_mode=False
+        self.page='bank';self.deck='patterns';self.backup_index=0;self.preview=None;self._grid_cache=None
         self._ssid_cache=None;self._ssid_rect=None;self.feedback=False;self.storage_failed=False;self.last_frame=time.monotonic();self.wall_time=time.time()
         self.setWindowTitle('生命场 · 原生实验版');self.setMinimumSize(640,360)
         self.setMouseTracking(True);self.resize(1280,720)
@@ -135,6 +149,8 @@ class View(QWidget):
     def fullscreen(self):self.showNormal() if self.isFullScreen() else self.showFullScreen()
     def backups(self):
         self.page='bank' if self.page=='backups' else 'backups';self.backup_index=0;self.refresh_preview()
+    def switch_deck(self):
+        self.deck='information' if self.deck=='patterns' else 'patterns';self.update()
     def backup_move(self,n):
         items=self.store.backups() if self.store else []
         if items:self.backup_index=(self.backup_index+n)%len(items);self.refresh_preview()
@@ -220,22 +236,37 @@ class View(QWidget):
         def button(name,x,y,action,on=False,color='life',enabled=True):
             region(name,x,y,48,48,action,enabled);icon(x+13,y+13,name,t[color] if on and enabled else t['muted'] if enabled else t['off'])
         def toggle(x,y,value,action,name):
-            region(name,x,y,48,48,action,value is not None)
-            icon(x+13,y+8,name,t['clock'] if value else t['muted'] if value is not None else t['off'])
-            for col in range(5):dot(x+12+col*5,y+36,3,t['life'] if value else t['line'] if value is not None else t['off'])
+            region(name,x,y,58,48,lambda:action() if name not in self.system.busy else None,value is not None)
+            # Large tile + thumb position distinguish power even without relying on hue.
+            p.fillRect(rect(x,y,58,43),t['life'] if value else t['off'])
+            ink=t['panel'] if value else t['muted']
+            icon(x+19,y+3,name,ink,3)
+            p.fillRect(rect(x+7,y+29,44,10),t['panel'] if value else t['line'])
+            p.fillRect(rect(x+(35 if value else 9),y+31,14,6),t['life'] if value else t['muted'])
+            if name in self.system.busy:p.fillRect(rect(x,y,58,4),t['speed'])
+            if value is None:text(x+25,y+8,'?',2,t['muted'])
+            if name=='bluetooth' and value:
+                count=self.system.state.get('connected')
+                if count is None:text(x+24,y+46,'?',1,t['muted'])
+                elif count>8:text(x+12,y+46,str(count),1.5,t['clock'])
+                else:
+                    for i in range(count):dot(x+6+i*6,y+46,4,t['clock'])
         def separator(y):
             for x in range(24,296,8):dot(x,y,2,t['line'])
         now=dt.datetime.fromtimestamp(self.wall_time)
-        region('close',268,0,34,28,self.close);icon(275,3,'close',t['muted'],2)
         region('logs',20,0,32,28,self.open_logs)
         dot(25,9,4,t['danger'] if self.storage_failed else t['life'])
+        region('page-switch',258,0,40,28,self.switch_deck)
+        text(270,3,'P' if self.deck=='patterns' else 'I',2.5,t['clock'])
         text(24,32,now.strftime('%H:%M'),7,t['clock']);text(296,67,now.strftime('%S'),3,t['clock'],True)
         text(24,104,now.strftime('%Y.%m.%d'),3,t['text'],font=DATE_GLYPHS);text(296,104,now.isoweekday(),3,t['clock'],True)
         generation=str(self.m.generation).zfill(10)
         text(24,145,'G',3,t['life']);text(296,145,generation,min(3,240/(6*len(generation))),t['life'],True)
         for x,label,key in ((24,'C','cpu'),(174,'M','memory')):
-            value=self.system.state[key];text(x,183,label,2,t['muted']);text(x+32,183,'---' if value is None else f'{value:03.0f}',2,t['clock'])
-        separator(207)
+            text(x,176,label,2.5,t['muted']);text(x+30,176,percent_label(self.system.state[key]),2.5,t['clock'])
+        for x,name,key in ((24,'down','download'),(174,'up','upload')):
+            icon(x,194,name,t['muted'],1.2);text(x+30,194,rate_label(self.system.state.get(key)),2.1,t['clock'])
+        separator(213)
         region('run',24,220,48,48,self.run_toggle)
         for y in range(7):
             for x in range(7):
@@ -255,42 +286,65 @@ class View(QWidget):
                 y1=bar.y()+row*bar.height()//3;y2=bar.y()+(row+1)*bar.height()//3
                 p.fillRect(x1,y1,max(1,x2-x1-1),max(1,y2-y1-1),t['speed'] if column//5<=selected else t['off'])
         separator(374)
-        if self.page=='bank':
-            region('mode',24,388,48,48,self.toggle_mode)
-            if self.m.mode=='preset':text(36,397,'P',4,t['life'])
-            else:icon(34,399,'dice',t['speed'],3)
-            button('left',92,388,lambda:self.select(self.m.index-1));text(150,398,f'{self.m.index:03}',4,t['life'])
-            button('right',249,388,lambda:self.select(self.m.index+1))
-            for i in range(8):
-                bit=128>>i;x=24+i*34;region('bit'+str(bit),x,451,28,27,lambda bit=bit:self.select(self.m.index^bit))
-                for y in range(4):
-                    for xx in range(4):dot(x+xx*6,451+y*6,4,t['life'] if self.m.index&bit else t['off'])
+        if self.deck=='information':
+            state=self.system.state
+            text(24,392,'IME',3,t['clock']);text(296,399,'FCITX5',2,t['muted'],True)
+            for x,key,label,action in ((24,'ime','IME',self.system.ime.toggle_mode),(174,'punctuation','PUNC',self.system.ime.toggle_punctuation)):
+                value=state[key];busy=bool(self.system.busy.intersection(('ime','punctuation')))
+                enabled=value is not None
+                region(key,x,437,122,94,lambda action=action:action() if not self.system.busy.intersection(('ime','punctuation')) else None,enabled)
+                p.fillRect(rect(x,437,122,94),t['life'] if value else t['clock'] if value is False else t['off'])
+                color=t['panel'] if value is not None else t['muted']
+                text(x+10,443,label,1.8,color)
+                symbols=('中' if value else '英') if key=='ime' else ('，。' if value else ',.')
+                text(x+(42 if key=='ime' else 38),466,symbols if value is not None else '?',4,color)
+                if busy:p.fillRect(rect(x,437,122,5),t['speed'])
+            for y,name,key in ((563,'down','download'),(607,'up','upload')):
+                icon(24,y,name,t['clock'],3)
+                text(296,y,rate_label(state.get(key)),3,t['clock'],True)
         else:
-            button('stack',24,388,self.backups,True,'archive');items=self.store.backups() if self.store else []
-            text(105,399,f'{self.backup_index+1 if items else 0}/{len(items)}',3,t['archive'])
-            button('left',24,445,lambda:self.backup_move(-1));button('right',249,445,lambda:self.backup_move(1))
-        box=rect(24,493,272,106);p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(t['line'],1));p.drawRect(box);p.setPen(Qt.PenStyle.NoPen)
-        if self.preview is not None and self.preview.any():
-            ys,xs=np.nonzero(self.preview);bw=int(xs.max()-xs.min()+1);bh=int(ys.max()-ys.min()+1)
-            ps=max(1,min(box.width()//(bw+4),box.height()//(bh+4),12))
-            # Large patterns are sampled only in preview; stored grid remains full-size.
-            if bw*ps>box.width() or bh*ps>box.height():
-                img=QImage(W,H,QImage.Format.Format_RGB32);img.fill(t['panel']);ip=QPainter(img);ip.setPen(Qt.PenStyle.NoPen);ip.setBrush(t['life']);ip.drawRects([QRect(int(x),int(y),1,1) for y,x in zip(ys,xs)]);ip.end()
-                p.drawImage(box,img)
+            if self.page=='bank':
+                region('mode',24,388,48,48,self.toggle_mode)
+                if self.m.mode=='preset':text(36,397,'P',4,t['life'])
+                else:icon(34,399,'dice',t['speed'],3)
+                button('left',92,388,lambda:self.select(self.m.index-1));text(150,398,f'{self.m.index:03}',4,t['life'])
+                button('right',249,388,lambda:self.select(self.m.index+1))
+                for i in range(8):
+                    bit=128>>i;x=24+i*34;region('bit'+str(bit),x,451,28,27,lambda bit=bit:self.select(self.m.index^bit))
+                    for y in range(4):
+                        for xx in range(4):dot(x+xx*6,451+y*6,4,t['life'] if self.m.index&bit else t['off'])
             else:
-                bx=box.x()+(box.width()-bw*ps)//2;by=box.y()+(box.height()-bh*ps)//2;p.setBrush(t['life'])
-                p.drawRects([QRect(bx+(int(x)-int(xs.min()))*ps,by+(int(y)-int(ys.min()))*ps,max(1,ps-1),max(1,ps-1)) for y,x in zip(ys,xs)])
-        region('load',24,493,272,106,self.load_selected,self.page=='bank')
-        if self.page=='bank':
-            button('save',24,612,self.save_slot,self.store.custom(self.m.preset) if self.store else False,'life',self.m.mode=='preset')
-            button('down',99,612,self.export,False,'archive');button('up',174,612,self.import_file,False,'clock');button('stack',249,612,self.backups,True,'archive')
-        else:
-            button('down',174,612,self.export,False,'archive');button('save',249,612,lambda:self.export(True),True,'archive')
+                button('stack',24,388,self.backups,True,'archive');items=self.store.backups() if self.store else []
+                text(105,399,f'{self.backup_index+1 if items else 0}/{len(items)}',3,t['archive'])
+                button('left',24,445,lambda:self.backup_move(-1));button('right',249,445,lambda:self.backup_move(1))
+            box=rect(24,493,272,106);p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(t['line'],1));p.drawRect(box);p.setPen(Qt.PenStyle.NoPen)
+            if self.preview is not None and self.preview.any():
+                ys,xs=np.nonzero(self.preview);bw=int(xs.max()-xs.min()+1);bh=int(ys.max()-ys.min()+1)
+                ps=max(1,min(box.width()//(bw+4),box.height()//(bh+4),12))
+                # Large patterns are sampled only in preview; stored grid remains full-size.
+                if bw*ps>box.width() or bh*ps>box.height():
+                    img=QImage(W,H,QImage.Format.Format_RGB32);img.fill(t['panel']);ip=QPainter(img);ip.setPen(Qt.PenStyle.NoPen);ip.setBrush(t['life']);ip.drawRects([QRect(int(x),int(y),1,1) for y,x in zip(ys,xs)]);ip.end()
+                    p.drawImage(box,img)
+                else:
+                    bx=box.x()+(box.width()-bw*ps)//2;by=box.y()+(box.height()-bh*ps)//2;p.setBrush(t['life'])
+                    p.drawRects([QRect(bx+(int(x)-int(xs.min()))*ps,by+(int(y)-int(ys.min()))*ps,max(1,ps-1),max(1,ps-1)) for y,x in zip(ys,xs)])
+            region('load',24,493,272,106,self.load_selected,self.page=='bank')
+            if self.page=='bank':
+                button('save',24,612,self.save_slot,self.store.custom(self.m.preset) if self.store else False,'life',self.m.mode=='preset')
+                button('down',99,612,self.export,False,'archive');button('up',174,612,self.import_file,False,'clock');button('stack',249,612,self.backups,True,'archive')
+            else:
+                button('down',174,612,self.export,False,'archive');button('save',249,612,lambda:self.export(True),True,'archive')
         separator(671)
         state=self.system.state;volume=state['volume']
-        button('mute' if state['muted'] else 'volume',24,682,self.system.mute,True,'clock',volume is not None)
+        muted=state['muted'] is True
+        if muted:p.fillRect(rect(24,682,48,48),t['danger'])
+        region('mute' if muted else 'volume',24,682,48,48,self.system.mute,volume is not None)
+        icon(37,695,'volume',t['panel'] if muted else t['clock'] if volume is not None else t['off'])
+        if muted:
+            # A broad diagonal crosses the entire speaker tile, not a few icon pixels.
+            for i in range(9):p.fillRect(rect(29+i*4,687+i*4,6,6),t['panel'])
         region('volume-bar',90,685,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,685,206,36).x())/rect(90,685,206,36).width()))),volume is not None)
-        for i in range(20):dot(92+i*10,696,7,t['clock'] if volume is not None and i<round(volume*20) else t['off'])
+        for i in range(20):dot(92+i*10,696,7,t['line'] if muted else t['clock'] if volume is not None and i<round(volume*20) else t['off'])
         toggle(24,737,state['wifi'],self.system.wifi,'wifi');toggle(99,737,state['bluetooth'],self.system.bluetooth,'bluetooth')
         label=wifi_label(state);self._ssid_rect=rect(174,737,122,46)
         key=(label,self._ssid_rect.width(),self._ssid_rect.height(),self.m.palette)
@@ -339,4 +393,6 @@ class View(QWidget):
         if self.stroke:self.stroke=None;self.clock.reset(speed=self.m.speed);self.checkpoint()
         super().focusOutEvent(event)
     def closeEvent(self,event):
-        self.checkpoint();self.system.stop();self.timer.stop();event.accept()
+        self.checkpoint()
+        if self.wallpaper_mode:self.hide();event.ignore();return
+        self.system.stop();self.timer.stop();event.accept()

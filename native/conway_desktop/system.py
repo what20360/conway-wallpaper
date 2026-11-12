@@ -47,6 +47,31 @@ def parse_bluetooth(text):
 def bluez_error(text):
     return bool(re.search(r'Failed to (?:set|connect)|org\.bluez\.Error\.|No default controller|No controller available',text,re.I))
 
+def parse_connected_devices(text):
+    if bluez_error(text) or re.search(r'Invalid command|Invalid argument|Missing',text,re.I):
+        raise ValueError('当前 BlueZ 无法读取已连接设备')
+    return len(set(re.findall(r'^Device ([0-9A-Fa-f:]{17})\s',text,re.M)))
+
+def network_counters(root=Path('/sys/class/net')):
+    """Count physical, up interfaces, excluding duplicated tunnel/bridge traffic."""
+    result={}
+    for entry in Path(root).iterdir():
+        try:
+            if not (entry/'device').exists() or (entry/'operstate').read_text().strip()!='up':continue
+            result[entry.name]=tuple(int((entry/'statistics'/name).read_text()) for name in ('rx_bytes','tx_bytes'))
+        except (OSError,ValueError):continue
+    return result
+
+class NetworkRates:
+    def __init__(self):self.previous=None
+    def sample(self,counters,now):
+        old=self.previous;self.previous=(now,counters)
+        if old is None or not counters or set(old[1])!=set(counters):return None,None
+        elapsed=now-old[0]
+        if not 0<elapsed<=6:return None,None
+        if any(counters[n][i]<old[1][n][i] for n in counters for i in (0,1)):return None,None
+        return tuple(sum(counters[n][i]-old[1][n][i] for n in counters)/elapsed for i in (0,1))
+
 def read_rfkill(root=Path('/sys/class/rfkill')):
     result=[]
     try:
@@ -71,7 +96,7 @@ class Commands(QObject):
         # Keep UTF-8 for network names while making command keywords predictable.
         env.insert('LC_ALL','C.UTF-8');env.insert('TERM','dumb');env.insert('NO_COLOR','1')
         process.setProcessEnvironment(env);timer=QTimer(process);timer.setSingleShot(True)
-        self.active[key]=process;done=False;started=time.monotonic()
+        self.active[key]=process;done=False;timed_out=False;process_failure='';started=time.monotonic()
         LOGGER.debug('Command start key=%s argv=%s timeout_ms=%s',key,redact(args),timeout_ms)
         def finish(ok,error=''):
             nonlocal done
@@ -79,22 +104,26 @@ class Commands(QObject):
             done=True;timer.stop()
             output=bytes(process.readAllStandardOutput()).decode('utf-8',errors='replace')
             stderr=bytes(process.readAllStandardError()).decode('utf-8',errors='replace')
-            # SSIDs never enter the log, including in debug mode.
-            logged='<SSID output omitted>' if key=='read-ssid' else redact(output or stderr or error)
+            logged='<SSID output omitted>' if key=='read-ssid' else '<device aliases omitted>' if key=='read-connected' else '<input method metadata omitted>' if key.startswith('ime-') else redact(output or stderr or error)
             LOGGER.debug('Command end key=%s ok=%s elapsed_ms=%d output=%s',key,ok,int((time.monotonic()-started)*1000),logged)
-            def cleanup():
-                if self.active.get(key) is process:self.active.pop(key,None)
-                process.deleteLater()
-            if process.state()!=QProcess.ProcessState.NotRunning:
-                process.finished.connect(cleanup);process.kill()
-            else:cleanup()
+            self.active.pop(key,None)
+            timer.timeout.disconnect();process.finished.disconnect();process.errorOccurred.disconnect()
+            process.deleteLater()
             callback(ok,output if ok else (error or stderr or output or '命令执行失败'))
         def process_error(error):
-            if not done:finish(False,process.errorString())
-        process.finished.connect(lambda code,status:finish(code==0 and status==QProcess.ExitStatus.NormalExit))
-        process.errorOccurred.connect(process_error)
-        timer.timeout.connect(lambda:finish(False,'命令超时'))
+            nonlocal process_failure
+            process_failure=process.errorString()
+            if error==QProcess.ProcessError.FailedToStart:finish(False,process_failure)
+        def timeout():
+            nonlocal timed_out
+            timed_out=True;timer.stop();process.kill()
+            # Deliver the callback only after finished; callers may immediately close
+            # the owning window/runner. Never destroy a live process during its signal.
+        process.finished.connect(lambda code,status:finish(not timed_out and code==0 and status==QProcess.ExitStatus.NormalExit,
+                                                            '命令超时' if timed_out else process_failure))
+        process.errorOccurred.connect(process_error);timer.timeout.connect(timeout)
         process.start(program,args[1:]);timer.start(timeout_ms);return True
+
     def stop(self):
         for process in list(self.active.values()):process.kill();process.waitForFinished(500)
 
@@ -102,8 +131,11 @@ class System(QObject):
     changed=Signal();notice=Signal(str)
     def __init__(self,enabled=True,parent=None):
         super().__init__(parent);self.enabled=enabled;self.commands=Commands(self)
-        self.state={'volume':None,'muted':None,'wifi':None,'ssid':None,'bluetooth':None,'theme':None,'cpu':None,'memory':None}
+        self.state={'volume':None,'muted':None,'wifi':None,'ssid':None,'bluetooth':None,'connected':None,'theme':None,'cpu':None,'memory':None,'download':None,'upload':None,'ime':None,'punctuation':None}
+        self.network=NetworkRates();self._network_wall=None
         self.errors={};self.busy=set();self._cpu=None;self.wifi_device=False;self._bluetooth_token=0
+        from .ime import Fcitx
+        self.ime=Fcitx(self)
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh)
         if enabled:self.timer.start();QTimer.singleShot(0,self.refresh)
     def _set_error(self,key,error):
@@ -139,6 +171,11 @@ class System(QObject):
             memory={p[0].rstrip(':'):int(p[1]) for line in Path('/proc/meminfo').read_text().splitlines() if len(p:=line.split())>=2}
             self.state['memory']=100*(1-memory['MemAvailable']/memory['MemTotal'])
         except (OSError,ValueError,KeyError):pass
+        wall=time.time()
+        if self._network_wall is not None and not 0<wall-self._network_wall<=6:self.network.previous=None
+        self._network_wall=wall
+        try:self.state['download'],self.state['upload']=self.network.sample(network_counters(),time.monotonic())
+        except OSError:self.state.update(download=None,upload=None);self.network.previous=None
         self._read('audio',['wpctl','get-volume','@DEFAULT_AUDIO_SINK@'],parse_volume)
         def wifi_devices(out):
             if not self.enabled:return
@@ -149,6 +186,8 @@ class System(QObject):
                 self._read('ssid',['nmcli','-t','-e','yes','-f','ACTIVE,SSID','device','wifi','list','--rescan','no'],parse_active_ssid)
         self.commands.run('devices',['nmcli','-t','-f','DEVICE,TYPE,STATE','device','status'],lambda ok,out:wifi_devices(out) if ok else self._wifi_error(out))
         self._read('bluetooth',['bluetoothctl','show'],parse_bluetooth)
+        if self.state['bluetooth'] is True:self._read('connected',['bluetoothctl','devices','Connected'],parse_connected_devices)
+        else:self.state['connected']=0 if self.state['bluetooth'] is False else None
         cfg=configparser.ConfigParser(interpolation=None)
         try:
             cfg.read(Path(os.environ.get('XDG_CONFIG_HOME',Path.home()/'.config'))/'kdeglobals')
@@ -224,4 +263,4 @@ class System(QObject):
         if not any((root/(target+'.colors')).exists() for root in roots):self.notice.emit('未找到系统配色方案 '+target);return
         self._action('theme',['plasma-apply-colorscheme',target])
     def stop(self):
-        self.enabled=False;self._bluetooth_token+=1;self.timer.stop();self.commands.stop()
+        self.enabled=False;self._bluetooth_token+=1;self.timer.stop();self.ime.stop();self.commands.stop()

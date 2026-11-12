@@ -1,0 +1,16 @@
+{
+  "KPackageStructure": "Plasma/Wallpaper",
+  "KPlugin": {
+    "Id": "org.what20360.conway",
+    "Name": "Conway · Native",
+    "Name[zh_CN]": "生命场 · 原生",
+    "Description": "Native pixel Life wallpaper with integrated system controls",
+    "Description[zh_CN]": "原生像素生命游戏与系统控制，需要运行生命场壁纸后台",
+    "Icon": "applications-graphics",
+    "Version": "0.3.0",
+    "License": "MIT",
+    "Authors": [{"Name": "what20360"}],
+    "Website": "https://github.com/what20360/conway-wallpaper"
+  },
+  "X-KDE-ParentApp": "org.kde.plasmashell"
+}

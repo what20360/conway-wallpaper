@@ -70,11 +70,12 @@ class Native(unittest.TestCase):
         from PySide6.QtCore import QEventLoop,QTimer
         runner=Commands();loop=QEventLoop();result=[]
         runner.run('ok',[sys.executable,'-c',"print('ready')"],lambda ok,out:(result.append((ok,out.strip())),loop.quit()))
-        QTimer.singleShot(4000,loop.quit);loop.exec()
+        watchdog=QTimer(loop);watchdog.setSingleShot(True);watchdog.timeout.connect(loop.quit)
+        watchdog.start(4000);loop.exec();watchdog.stop()
         self.assertEqual(result,[(True,'ready')])
         result=[]
         runner.run('timeout',[sys.executable,'-c','import time; time.sleep(10)'],lambda ok,out:(result.append((ok,out)),loop.quit()))
-        QTimer.singleShot(4500,loop.quit);loop.exec()
+        watchdog.start(4500);loop.exec();watchdog.stop()
         self.assertTrue(result);self.assertFalse(result[0][0]);self.assertIn('超时',result[0][1]);runner.stop()
 
 if __name__=='__main__':unittest.main()

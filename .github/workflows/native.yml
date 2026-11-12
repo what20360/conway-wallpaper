@@ -1,4 +1,4 @@
-name: Native Qt prototype
+name: Native desktop and wallpaper
 on:
   push:
     paths: ['native/**', '.github/workflows/native.yml']

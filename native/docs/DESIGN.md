@@ -17,7 +17,7 @@
 - 当前网格、代数和选项的自动检查点；重启恢复，不增加编辑过程历史。
 - CPU、内存读数；系统音量、静音、Wi-Fi 和蓝牙快捷控制，显示已连接 SSID。缺少工具、服务或设备时显示不可用，操作失败不伪造成功状态。
 
-**第一版不声称已经实现 Wayland 原生背景层。** 普通全屏窗口不等于真正的壁纸：它会遮住桌面。KWin 背景层、桌面图标、面板及输入交互需另做 LayerShellQt / 原生 Plasma 集成并在真实 KDE 会话验证。先确认原生像素显示、系统控制和可靠恢复，再推进桌面层。
+0.3 增加 **Plasma 6 原生 WallpaperItem 插件**，由 Plasma 负责背景层，而非强制窗口置底。Python 后台保留独立模型与 SQLite，插件接收无损物理像素帧并发送结构化鼠标操作。此路径已完成本机传输和 QML 核心交互验证，KDE 特有导入、桌面图标和鼠标路由仍需真实 Plasma 会话验证；不是已经完成全面验收的稳定壁纸产品。
 
 ## 2. 技术选型
 
@@ -35,6 +35,9 @@
 | system.py | 非阻塞命令、系统状态读取、错误与超时 |
 | view.py | 物理像素布局、像素字模、命中区及鼠标操作 |
 | app.py | 参数、启动、单实例锁、退出保存 |
+| wallpaper.py / plasma-wallpaper | 回环连接、无损帧缓存、Plasma 呈现、托盘与自动启动 |
+| ime.py | Fcitx5 与 Rime 状态、真实标点菜单动作、读回 |
+| presets.py | 大型确定性场景组合 |
 
 ## 3. 像素与分辨率契约
 
@@ -76,7 +79,7 @@ Qt 窗口大小通常以逻辑像素表示，不能把它误认为屏幕物理�
 
 第一阶段：原生窗口完整交互和持久化、系统控制接线。
 第二阶段：Kubuntu 实测 DPI、音量、无线与蓝牙权限、休眠恢复。
-第三阶段：真正的背景层与多屏、自启动、安装包、事件订阅和性能优化。
+第三阶段：Plasma 壁纸集成已实现实验代码；继续真实桌面验收、事件订阅和性能优化。多屏共用同一模型，按屏幕重建命中区，不提供每屏独立存档。
 
 ## 7. 参考
 
@@ -95,3 +98,22 @@ Qt 窗口大小通常以逻辑像素表示，不能把它误认为屏幕物理�
 - SSID 从 NetworkManager 缓存的已连接接入点读取，使用 `--rescan no`，不为显示名称不断强制扫描。正确解析 nmcli 转义字段，Unicode 名称在小位图中栅格化后以整数倍像素块显示。
 - 文件日志轮换，默认只记录操作、状态变化和失败。详细模式记录有界命令输出；SSID 输出始终省略，MAC 脱敏。只读诊断使用独立轮换文件，避免和正在运行的应用争用同一文件。
 - 更新脚本直接下载分支／标签源码快照或指定提交归档，不依赖 GitHub API。优先从 ZIP 注释读取提交号，缺失时用归档内容 SHA-256 标识；验证路径与解压大小，安装到独立版本目录；共享按依赖和 Python 版本区分的环境。新版本 Qt 自检成功后才切换 current；失败保留旧版，保留 previous 支持离线回退。运行数据完全独立，不在升级目录中。
+
+## 9. 0.3 壁纸与输入法的具体边界
+
+- QML 使用 WallpaperItem 原生插件，按屏幕 DPR 请求物理像素。双缓冲 Image 关闭平滑插值，保留上个完整画面，先查询状态版本，有变化才传图。像素来自同一个 QPainter 渲染器；不是网页或 WebEngine。Qt 最终合成仍受桌面缩放影响，不能保证任意分数缩放均无瑕疵。
+- 后台只监听 IPv4 回环端口 17832。随机 256 位凭据以 0600 文件保存，安装时写入该用户插件；GET 帧带凭据，其他端点用 Bearer，拒绝非空网页 Origin、跨域预检、任意命令和任意文件访问；正文与分辨率有限制，慢连接超时关闭。不要对外转发。
+- 帧缓存只保留最近一张，版本比较含网格、代数、时间、系统状态、残影及页面；不积累图像历史。PNG 使用标准无损 RGB 与快速压缩，避免默认自适应滤波的额外开销。高速稠密图案仍有 CPU 与本机传输成本。未来可改共享内存／原生场景图，不应宣称当前已零开销。
+- Plasma 重载／锁屏不会销毁后台模型；后台关闭则按检查点恢复。Qt 文件对话框由同一后台在用户桌面显示，控制窗口关闭只隐藏；显式退出或 SIGTERM 会补存检查点。不会自动更换当前桌面的壁纸或无条件添加自启动。
+- 壁纸不接收右键，留给 Plasma；左键与 Shift＋左键承担绘制／擦除。图标布局可能先消费事件。提供壁纸上下文菜单和托盘中的控制窗口作为可操作入口；桌面图标与小部件是否完全兼容需实测。
+- 输入法仅调用 Fcitx5 会话 D-Bus，Rime 中／英用 IsAsciiMode／SetAsciiMode，英文键盘激活中文后还需确认 Rime 是否仍处于内部英文模式。标点不是 Controller1 的标准属性，使用 Fcitx notificationitem 的真实 DBusMenu 动作；只接受可识别标点图标或明确的中／英标点标签对。找不到、多个候选或语义不清即不可用。
+- Fcitx 的最近输入上下文和按程序记忆策略决定实际作用对象，不可假设它是全局状态。未修改配置、未注入按键、未读取输入文本，也不维护快捷键。
+
+参考：
+- https://api.kde.org/qml-org-kde-plasma-plasmoid-wallpaperitem.html
+- https://github.com/KDE/plasma-workspace/tree/master/wallpapers/color
+- https://github.com/fcitx/fcitx5/blob/master/src/modules/dbus/dbusmodule.cpp
+- https://github.com/fcitx/fcitx5-rime/blob/master/src/rimeservice.h
+- https://github.com/fcitx/fcitx5-rime/blob/master/src/rimeaction.cpp
+- https://github.com/fcitx/fcitx5/blob/master/src/modules/notificationitem/dbusmenu.cpp
+- https://www.kernel.org/doc/html/latest/networking/statistics.html

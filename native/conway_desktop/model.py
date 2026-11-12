@@ -14,6 +14,9 @@ def evolve(cells):
     return ((neighbors == 3) | ((cells != 0) & (neighbors == 2))).astype(np.uint8)
 
 def default_cells(index):
+    if 8<=index<=19:
+        from .presets import large_preset
+        return large_preset(index)
     c = np.zeros((H,W), dtype=np.uint8)
     pulsar = [(a,b) for a in (2,3,4,8,9,10) for b in (0,5,7,12)]
     pulsar += [(b,a) for a,b in list(pulsar)]

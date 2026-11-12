@@ -14,6 +14,8 @@ from .view import View
 def main(argv=None):
     parser=argparse.ArgumentParser(description='生命场原生实验版')
     parser.add_argument('--fullscreen',action='store_true')
+    parser.add_argument('--wallpaper',action='store_true',help='运行 Plasma 6 原生壁纸后台；右键菜单和图标由 Plasma 管理')
+    parser.add_argument('--install-wallpaper',action='store_true',help='安装当前用户的 Plasma 6 壁纸插件后退出')
     parser.add_argument('--resolution',choices=['1920x1080','2560x1440'],default='1920x1080')
     parser.add_argument('--data-dir',type=Path)
     parser.add_argument('--no-system',action='store_true')
@@ -23,9 +25,14 @@ def main(argv=None):
     parser.add_argument('--render',type=Path,help='导出原生渲染图并退出，不加载用户数据或控制系统')
     args=parser.parse_args(argv)
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-    app=(QCoreApplication if args.diagnose else QApplication)([sys.argv[0]])
+    if args.render and (args.wallpaper or args.install_wallpaper):parser.error('--render 不能与壁纸模式同时使用')
+    app=(QCoreApplication if args.diagnose or args.install_wallpaper else QApplication)([sys.argv[0]])
     app.setApplicationName('ConwayDesktop');app.setOrganizationName('ConwayWallpaper')
     path=args.data_dir or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+    if args.install_wallpaper:
+        from .wallpaper import install_plugin
+        try:print('已安装壁纸插件：',install_plugin(path));return 0
+        except Exception as exc:print('壁纸安装失败：',exc,file=sys.stderr);return 1
     lock=None
     if not args.render and not args.diagnose:
         path.mkdir(parents=True,exist_ok=True);lock=QLockFile(str(path/'app.lock'))
@@ -54,10 +61,28 @@ def main(argv=None):
         w,h=map(int,args.resolution.split('x'));args.render.parent.mkdir(parents=True,exist_ok=True)
         ok=window.render_image(w,h).save(str(args.render));window.timer.stop()
         print('已输出原生渲染图：',args.render);return 0 if ok else 1
-    if args.fullscreen:window.showFullScreen()
+    from .wallpaper import create_tray,WallpaperServer,install_plugin,private_token
+    server=None
+    if args.wallpaper:
+        try:
+            install_plugin(path)
+            window.wallpaper_mode=True;server=WallpaperServer(window,private_token(path))
+        except Exception as exc:
+            LOGGER.exception('Wallpaper startup failed');print('壁纸后台启动失败：',exc,file=sys.stderr)
+            window.wallpaper_mode=False;window.close();store.close();lock.unlock();return 1
+        app.setQuitOnLastWindowClosed(False)
+        print('壁纸后台已启动。桌面右键 → 配置桌面和壁纸 → 壁纸类型 → 生命场 · 原生。',flush=True)
+        app.aboutToQuit.connect(server.stop)
+    elif args.fullscreen:window.showFullScreen()
     else:window.show()
+    tray=create_tray(window,path)
+    # Desktop logout/SIGTERM must save the newest state as well as the periodic checkpoint.
+    import signal
+    signal.signal(signal.SIGTERM,lambda *_:app.quit());signal.signal(signal.SIGINT,lambda *_:app.quit())
+    app.aboutToQuit.connect(window.checkpoint)
     LOGGER.info('Window started fullscreen=%s system_controls=%s',args.fullscreen,not args.no_system)
     result=app.exec()
+    window.system.stop();window.timer.stop()
     LOGGER.info('Application exited code=%s',result)
     if store:store.close()
     if lock:lock.unlock()
