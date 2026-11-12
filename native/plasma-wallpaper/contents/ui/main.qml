@@ -5,15 +5,23 @@ import org.kde.plasma.core as PlasmaCore
 
 WallpaperItem {
     id: root
+    readonly property string frontendVersion: "0.3.2"
     // Source resolution and the Item's logical display size are separate contracts.
     readonly property real ratio: Screen.devicePixelRatio || 1
     readonly property real renderScale: Math.min(Math.max(ratio, 640 / Math.max(1,width), 360 / Math.max(1,height)),
                                                 2560 / Math.max(1,width), 1440 / Math.max(1,height))
-    readonly property int pixelWidth: Math.min(2560, Math.max(640, Math.round(width * renderScale)))
-    readonly property int pixelHeight: Math.min(1440, Math.max(360, Math.round(height * renderScale)))
+    // Fractional Wayland geometry can round 2K to 2560x1439. That would make
+    // the native integer cell scale fall from 8 to 7. Snap near-16:9 surfaces
+    // to one of our supported canvases, rather than flooring one short axis.
+    readonly property bool widescreen: height > 0 && Math.abs(width / height - 16/9) < 0.01
+    readonly property int targetWidth: width*ratio > 1958 || height*ratio > 1102 ? 2560 : 1920
+    readonly property int pixelWidth: widescreen ? targetWidth : Math.min(2560, Math.max(640, Math.round(width * renderScale)))
+    readonly property int pixelHeight: widescreen ? targetWidth*9/16 : Math.min(1440, Math.max(360, Math.round(height * renderScale)))
     property bool frontIsA: true
     property bool fetching: false
     property bool connected: false
+    property bool reloadRequired: false
+    property bool editing: false
     property bool sending: false
     property int sequence: 0
     property int lastRevision: -1
@@ -33,6 +41,11 @@ WallpaperItem {
         PlasmaCore.Action {
             text: "生命场：打开日志"; icon.name: "document-open"
             onTriggered: root.command("logs")
+        },
+        PlasmaCore.Action {
+            text: "生命场：桌面绘制模式"; icon.name: "draw-freehand"
+            checkable: true; checked: root.editing
+            onTriggered: root.command("edit")
         }
     ]
     function command(name) {
@@ -77,9 +90,9 @@ WallpaperItem {
         onStatusChanged: root.frameReady(b)
     }
     Text {
-        visible: !root.connected
+        visible: !root.connected || root.reloadRequired
         anchors.centerIn: parent
-        text: "请启动“生命场壁纸后台”\n若已启动，请打开后台日志检查连接。"
+        text: root.reloadRequired ? "生命场前端与后台版本不一致\n请重载 Plasma 桌面外壳。" : "请启动“生命场壁纸后台”\n若已启动，请打开后台日志检查连接。"
         color: "#91bbd6"; horizontalAlignment: Text.AlignHCenter
     }
     Timer {
@@ -89,12 +102,20 @@ WallpaperItem {
             if (root.fetching || !connection.token) return
             root.fetching = true
             const request = new XMLHttpRequest()
-            request.open("GET",connection.endpoint + "/status")
+            const image = root.frontIsA ? a : b
+            request.open("GET",connection.endpoint + "/status?frontend=" + root.frontendVersion
+                + "&logicalW=" + root.width + "&logicalH=" + root.height
+                + "&parentW=" + (root.parent ? root.parent.width : 0) + "&parentH=" + (root.parent ? root.parent.height : 0)
+                + "&screenDpr=" + root.ratio + "&sourceW=" + root.pixelWidth + "&sourceH=" + root.pixelHeight
+                + "&imageW=" + image.width + "&imageH=" + image.height + "&editing=" + (root.editing ? 1 : 0))
             request.setRequestHeader("Authorization","Bearer " + connection.token)
             request.onreadystatechange = function() {
                 if (request.readyState !== XMLHttpRequest.DONE) return
                 if (request.status !== 200) { root.connected = false; root.fetching = false; return }
-                const revision = JSON.parse(request.responseText).revision
+                const status = JSON.parse(request.responseText)
+                const revision = status.revision
+                root.reloadRequired = !!status.reloadRequired || status.backendVersion !== root.frontendVersion
+                root.editing = !!status.editing
                 if (revision === root.lastRevision && root.lastWidth === root.pixelWidth && root.lastHeight === root.pixelHeight) {
                     root.connected = true; root.fetching = false; return
                 }
@@ -143,20 +164,45 @@ WallpaperItem {
         request.send(JSON.stringify(inputQueue.shift()))
     }
     MouseArea {
-        anchors.fill: parent
+        id: pointer
+        objectName: "wallpaperInput"
+        // A wallpaper is below Folder View, which consumes blank-desktop clicks.
+        // Lift only this transparent input area to the same desktop window's
+        // content layer; the wallpaper image remains behind icons and widgets.
+        parent: root.Window.window ? root.Window.window.contentItem : root.parent
+        z: 10000
+        property rect surfaceRect: parent ? root.mapToItem(parent,Qt.rect(0,0,root.width,root.height)) : Qt.rect(0,0,0,0)
+        x: surfaceRect.x + (root.editing ? 0 : surfaceRect.width*.8)
+        y: surfaceRect.y
+        width: surfaceRect.width*(root.editing ? 1 : .2)
+        height: surfaceRect.height
+        visible: root.visible
+        enabled: root.connected
+        cursorShape: root.editing ? Qt.CrossCursor : Qt.PointingHandCursor
         acceptedButtons: Qt.LeftButton // Reserve right-click for the Plasma desktop menu.
         onPressed: function(mouse) {
             if (!root.connected) { mouse.accepted = false; return }
-            root.enqueue("press",mouse.x,mouse.y,!!(mouse.modifiers & Qt.ShiftModifier))
+            const point = mapToItem(root,mouse.x,mouse.y)
+            root.enqueue("press",point.x,point.y,!!(mouse.modifiers & Qt.ShiftModifier))
         }
         onPositionChanged: function(mouse) {
-            if (pressed) root.enqueue("move",mouse.x,mouse.y,!!(mouse.modifiers & Qt.ShiftModifier))
+            if (pressed) {
+                const point = mapToItem(root,mouse.x,mouse.y)
+                root.enqueue("move",point.x,point.y,!!(mouse.modifiers & Qt.ShiftModifier))
+            }
         }
-        onReleased: function(mouse) { root.enqueue("release",mouse.x,mouse.y,false) }
+        onReleased: function(mouse) {
+            const point = mapToItem(root,mouse.x,mouse.y)
+            root.enqueue("release",point.x,point.y,false)
+        }
         onCanceled: root.enqueue("cancel",0,0,false)
         Timer {
             interval: 1000; repeat: true; running: parent.pressed
-            onTriggered: root.enqueue("move",parent.mouseX,parent.mouseY,false)
+            onTriggered: {
+                const point = pointer.mapToItem(root,pointer.mouseX,pointer.mouseY)
+                root.enqueue("move",point.x,point.y,false)
+            }
         }
     }
+    Component.onDestruction: { pointer.enabled = false; pointer.visible = false; pointer.parent = null }
 }

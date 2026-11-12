@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+os.environ.setdefault('QT_QUICK_BACKEND','software')
 from pathlib import Path
 import json
 import sys
@@ -170,7 +171,7 @@ class WallpaperBridge(unittest.TestCase):
             self.wait_until(lambda:component.status()!=QQmlComponent.Status.Loading)
             self.assertFalse(component.isError(),str(component.errors()));item=component.create()
             self.assertIsNotNone(item,str(component.errors()))
-            window=QQuickWindow();item.setParentItem(window.contentItem());item.setWidth(width);item.setHeight(height)
+            window=QQuickWindow();window.resize(width,height);item.setParentItem(window.contentItem());item.setWidth(width);item.setHeight(height)
             def front():return item.findChild(QObject,'frameA' if item.property('frontIsA') else 'frameB')
             self.wait_until(lambda:item.property('connected') and front().property('frameWidth')==item.property('pixelWidth') and front().property('frameHeight')==item.property('pixelHeight'))
             try:yield item,front()
@@ -197,6 +198,55 @@ class WallpaperBridge(unittest.TestCase):
             item.enqueue('press',button.center().x(),button.center().y(),False)
             self.wait_until(lambda:self.view.deck=='information')
             item.enqueue('release',button.center().x(),button.center().y(),False)
+    def test_user_130_percent_rounding_keeps_full_2k_canvas(self):
+        from conway_desktop.view import geometry
+        for width,height,ratio in ((1970,1107,2),(1969,1107,2),(1970,1108,1.3)):
+            with self.subTest(width=width,height=height,dpr=ratio),self.presentation(width,height,ratio) as (item,frame):
+                self.assertEqual((frame.property('frameWidth'),frame.property('frameHeight')),(2560,1440))
+                self.assertEqual(geometry(frame.property('frameWidth'),frame.property('frameHeight')),(8,0,0))
+    def test_real_mouse_delivery_above_desktop_and_opt_in_drawing(self):
+        from PySide6.QtCore import Qt,QPoint,QObject
+        from PySide6.QtQml import QQmlEngine,QQmlComponent
+        from PySide6.QtTest import QTest
+        self.view.wallpaper_mode=True
+        with self.presentation(1280,720,2) as (item,frame):
+            overlay=item.findChild(QObject,'wallpaperInput');self.assertIsNotNone(overlay);self.assertIs(overlay.parent(),item)
+            window=item.window();engine=QQmlEngine.contextForObject(item).engine()
+            component=QQmlComponent(engine)
+            component.setData(b'import QtQuick\nMouseArea { property int pressCount: 0; acceptedButtons: Qt.LeftButton | Qt.RightButton; onPressed: pressCount += 1 }',QUrl())
+            desktop=component.create();self.assertIsNotNone(desktop,str(component.errors()))
+            desktop.setParentItem(window.contentItem());desktop.setWidth(1280);desktop.setHeight(720);desktop.setZ(100)
+            item.setZ(-1000);window.show();APP.processEvents()
+            self.view.render_image(2560,1440)
+            button=next(rect for rect,_,name in self.view.regions if name=='page-switch')
+            QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(button.center().x()//2,button.center().y()//2))
+            self.wait_until(lambda:self.view.deck=='information')
+            self.assertEqual(desktop.property('pressCount'),0)
+            QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(100,100))
+            self.assertEqual(desktop.property('pressCount'),1);self.assertFalse(self.model.cells.any())
+            # The pixel pencil button enables drawing without taking desktop icons
+            # away from users when drawing mode is off.
+            pencil=next(rect for rect,_,name in self.view.regions if name=='desktop-edit')
+            QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(pencil.center().x()//2,pencil.center().y()//2))
+            self.wait_until(lambda:item.property('editing'))
+            QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(100,100))
+            self.wait_until(lambda:self.model.cells[25,25]==1 and self.view.stroke is None)
+            self.assertEqual(desktop.property('pressCount'),1)
+            QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,QPoint(100,100))
+            self.wait_until(lambda:self.model.cells[25,25]==0 and self.view.stroke is None)
+            QTest.mouseClick(window,Qt.MouseButton.RightButton,Qt.KeyboardModifier.NoModifier,QPoint(100,100))
+            self.assertEqual(desktop.property('pressCount'),2)
+            desktop.setParentItem(None);desktop.deleteLater()
+    def test_frontend_version_and_layout_report_are_read_only_and_authenticated(self):
+        from conway_desktop.wallpaper import VERSION
+        status,data=self.request('/display-info',auth=False);self.assertEqual(status,401)
+        status,data=self.request('/status');self.assertEqual(status,200);self.assertTrue(json.loads(data)['reloadRequired'])
+        path='/status?frontend='+VERSION+'&logicalW=1970&logicalH=1107&screenDpr=2&sourceW=2560&sourceH=1440&imageW=1970&imageH=1107'
+        status,data=self.request(path);self.assertEqual(status,200);self.assertFalse(json.loads(data)['reloadRequired'])
+        status,data=self.request('/display-info');info=json.loads(data)
+        self.assertEqual(info['backendVersion'],VERSION);self.assertEqual(info['clients'][-1]['logicalW'],1970)
+        self.assertEqual(info['clients'][-1]['sourceH'],1440);self.assertNotIn(self.server.token,data.decode())
+        self.assertEqual(self.request('/status?frontend='+VERSION+'&logicalW=nan')[0],400)
     def test_qml_presentation_fetches_native_frame_and_forwards_controls(self):
         # Test actual QML presentation with an Item root. The Plasma-specific import
         # and containment/desktop input routing require a real Plasma 6 session.

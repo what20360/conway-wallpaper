@@ -15,6 +15,9 @@ import tempfile
 import time
 import struct
 import zlib
+import math
+import re
+from collections import OrderedDict
 import numpy as np
 from urllib.parse import urlsplit,parse_qs
 from PySide6.QtCore import QObject,QTimer,QPointF,Qt
@@ -25,6 +28,7 @@ from .logging_setup import LOGGER
 
 PLUGIN_ID='org.what20360.conway'
 PORT=17832
+VERSION=Path(__file__).parents[1].joinpath('VERSION').read_text().strip()
 
 def encode_frame(image):
     """Lossless RGB PNG with filter 0 and level 1; avoid costly adaptive filtering."""
@@ -78,6 +82,8 @@ class WallpaperServer(QObject):
     def __init__(self,view,token,port=PORT,parent=None):
         super().__init__(parent);self.view=view;self.token=token;self.pending={};self.sockets=set();self.cache=None
         self._signature=None;self._revision=0
+        self.display_clients=OrderedDict()
+        self.input_counts={};self.last_input=None
         self.server=QTcpServer(self)
         if not self.server.listen(QHostAddress('127.0.0.1'),port):raise RuntimeError('壁纸后台端口被占用：'+self.server.errorString())
         self.server.newConnection.connect(self.accept)
@@ -126,7 +132,12 @@ class WallpaperServer(QObject):
             if headers.get('origin','') not in ('','null') or not hmac.compare_digest(supplied,self.token):
                 self.reply(socket,401);return
             if method=='GET' and url.path=='/status':
-                self.reply(socket,200,json.dumps({'revision':self.revision()}).encode())
+                client=self.record_display(query)
+                self.reply(socket,200,json.dumps({'revision':self.revision(),'backendVersion':VERSION,
+                                                 'reloadRequired':client['frontendVersion']!=VERSION,
+                                                 'editing':self.view.desktop_editing}).encode())
+            elif method=='GET' and url.path=='/display-info':
+                self.reply(socket,200,json.dumps(self.display_info()).encode())
             elif method=='GET' and url.path=='/frame':
                 w=int(query.get('w',['1920'])[0]);h=int(query.get('h',['1080'])[0]);self.dimensions(w,h)
                 # Coalesce simultaneous consumers, without keeping historical images.
@@ -142,10 +153,35 @@ class WallpaperServer(QObject):
             else:self.reply(socket,404)
         except (ValueError,KeyError,TypeError,UnicodeError):self.reply(socket,400)
         except Exception:LOGGER.exception('Wallpaper request failed');self.reply(socket,503)
+    def record_display(self,query):
+        version=query.get('frontend',['unversioned'])[0]
+        if version!='unversioned' and (len(version)>20 or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version)):raise ValueError('frontend version')
+        report={'frontendVersion':version}
+        for name in ('logicalW','logicalH','parentW','parentH','screenDpr','sourceW','sourceH','imageW','imageH','editing'):
+            if name in query:
+                value=float(query[name][0])
+                if not math.isfinite(value) or not 0<=value<=32768:raise ValueError('display geometry')
+                report[name]=round(value,3)
+        key=tuple(report.items())
+        if key not in self.display_clients:
+            LOGGER.info('Wallpaper display backend=%s report=%s',VERSION,report)
+            if version!=VERSION:LOGGER.warning('Wallpaper frontend is stale or unversioned; restart plasma-plasmashell.service to load installed QML')
+        self.display_clients[key]=report;self.display_clients.move_to_end(key)
+        while len(self.display_clients)>8:self.display_clients.popitem(last=False)
+        return report
+    def display_info(self):
+        from PySide6.QtGui import QGuiApplication
+        return {'backendVersion':VERSION,'clients':list(self.display_clients.values()),
+                'inputCounts':self.input_counts,'lastInput':self.last_input,
+                'nativeWindowLogicalSize':[self.view.width(),self.view.height()],
+                'nativeWindowDpr':self.view.devicePixelRatioF(),
+                'screens':[{'logicalSize':[screen.size().width(),screen.size().height()],
+                            'screenDpr':screen.devicePixelRatio()} for screen in QGuiApplication.screens()]}
+
     def revision(self):
         view=self.view;m=view.m
         fade=zlib.crc32((m.fade/.15).astype(np.uint8).tobytes()) if m.trails else 0
-        signature=(tuple(m.settings().items()),zlib.crc32(m.cells.tobytes()),fade,int(view.wall_time),
+        signature=(tuple(m.settings().items()),zlib.crc32(m.cells.tobytes()),fade,int(view.wall_time),view.desktop_editing,
                    tuple(view.system.state.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
                    zlib.crc32(view.preview.tobytes()) if view.preview is not None else 0,
                    view.hover.x() if view.hover else None,view.hover.y() if view.hover else None,
@@ -158,7 +194,7 @@ class WallpaperServer(QObject):
     def validate_input(self,event):
         if not isinstance(event,dict):raise ValueError('event')
         if event.get('kind')=='command':
-            if event.get('name') not in ('window','run','logs'):raise ValueError('command')
+            if event.get('name') not in ('window','run','logs','edit'):raise ValueError('command')
             return
         if event.get('kind') not in ('press','move','release','cancel'):raise ValueError('kind')
         self.dimensions(event['w'],event['h'])
@@ -167,10 +203,14 @@ class WallpaperServer(QObject):
     def input(self,event):
         try:
             self.cache=None;view=self.view
+            self.input_counts[event['kind']]=self.input_counts.get(event['kind'],0)+1
+            self.last_input={key:value for key,value in event.items() if key in ('kind','x','y','w','h','name')}
+            if event['kind'] in ('press','command'):LOGGER.debug('Wallpaper input %s',self.last_input)
             if event['kind']=='command':
                 if event['name']=='window':view.showNormal();view.raise_();view.activateWindow()
                 elif event['name']=='run':view.run_toggle()
                 elif event['name']=='logs':view.open_logs()
+                elif event['name']=='edit':view.toggle_desktop_editing()
                 return
             # Rebuild hit regions for this screen, including when several screens share a model.
             view.render_image(event['w'],event['h'])

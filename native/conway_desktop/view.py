@@ -72,7 +72,7 @@ def geometry(width,height):
 class View(QWidget):
     def __init__(self,model,store,system):
         super().__init__();self.m=model;self.store=store;self.system=system
-        self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0;self.wallpaper_mode=False
+        self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0;self.wallpaper_mode=False;self.desktop_editing=False
         self.page='bank';self.deck='patterns';self.backup_index=0;self.preview=None;self._grid_cache=None
         self._ssid_cache=None;self._ssid_rect=None;self.feedback=False;self.storage_failed=False;self.last_frame=time.monotonic();self.wall_time=time.time()
         self.setWindowTitle('生命场 · 原生实验版');self.setMinimumSize(640,360)
@@ -151,6 +151,8 @@ class View(QWidget):
         self.page='bank' if self.page=='backups' else 'backups';self.backup_index=0;self.refresh_preview()
     def switch_deck(self):
         self.deck='information' if self.deck=='patterns' else 'patterns';self.update()
+    def toggle_desktop_editing(self):
+        self.desktop_editing=not self.desktop_editing;self.update()
     def backup_move(self,n):
         items=self.store.backups() if self.store else []
         if items:self.backup_index=(self.backup_index+n)%len(items);self.refresh_preview()
@@ -260,6 +262,9 @@ class View(QWidget):
         dot(25,9,4,t['danger'] if self.storage_failed else t['life'])
         region('page-switch',258,0,40,28,self.switch_deck)
         text(270,3,'P' if self.deck=='patterns' else 'I',2.5,t['clock'])
+        if self.wallpaper_mode:
+            region('desktop-edit',68,0,40,28,self.toggle_desktop_editing)
+            icon(77,3,'brush',t['life'] if self.desktop_editing else t['muted'],2)
         text(24,32,now.strftime('%H:%M'),7,t['clock']);text(296,67,now.strftime('%S'),3,t['clock'],True)
         text(24,104,now.strftime('%Y.%m.%d'),3,t['text'],font=DATE_GLYPHS);text(296,104,now.isoweekday(),3,t['clock'],True)
         generation=str(self.m.generation).zfill(10)

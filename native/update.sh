@@ -32,7 +32,7 @@ LOG=logging.getLogger('update')
 
 def download(url,target,limit=64*1024*1024):
     LOG.info('Download source url=%s',url)
-    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.3.1','Accept':'application/zip, */*'})
+    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.3.2','Accept':'application/zip, */*'})
     with urllib.request.urlopen(request,timeout=30) as response,open(target,'wb') as out:
         size=0
         while chunk:=response.read(1024*1024):

@@ -22,13 +22,22 @@ def main(argv=None):
     parser.add_argument('--debug',action='store_true',help='记录详细命令诊断，不记录 SSID')
     parser.add_argument('--log-dir',type=Path,help='指定日志目录')
     parser.add_argument('--diagnose',action='store_true',help='收集只读系统诊断后退出')
+    parser.add_argument('--wallpaper-info',action='store_true',help='读取正在运行的壁纸前端版本、宿主尺寸与 DPI 后退出')
     parser.add_argument('--render',type=Path,help='导出原生渲染图并退出，不加载用户数据或控制系统')
     args=parser.parse_args(argv)
+    if args.wallpaper_info and (args.render or args.wallpaper or args.install_wallpaper or args.diagnose):parser.error('--wallpaper-info 必须单独运行')
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     if args.render and (args.wallpaper or args.install_wallpaper):parser.error('--render 不能与壁纸模式同时使用')
-    app=(QCoreApplication if args.diagnose or args.install_wallpaper else QApplication)([sys.argv[0]])
+    app=(QCoreApplication if args.diagnose or args.install_wallpaper or args.wallpaper_info else QApplication)([sys.argv[0]])
     app.setApplicationName('ConwayDesktop');app.setOrganizationName('ConwayWallpaper')
     path=args.data_dir or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+    if args.wallpaper_info:
+        import json
+        from .diagnostics import read_wallpaper_info
+        try:
+            report=read_wallpaper_info(path)
+            print(json.dumps(report,ensure_ascii=False,indent=2));return 0
+        except Exception as exc:print('无法读取壁纸后台显示信息：',exc,file=sys.stderr);return 1
     if args.install_wallpaper:
         from .wallpaper import install_plugin
         try:print('已安装壁纸插件：',install_plugin(path));return 0
@@ -46,7 +55,7 @@ def main(argv=None):
         qInstallMessageHandler(qt_message)
     if args.diagnose:
         from .diagnostics import collect
-        collect();return 0
+        collect(path);return 0
     model=Model();store=None
     if not args.render:
         store=Store(path/'state.sqlite3')
