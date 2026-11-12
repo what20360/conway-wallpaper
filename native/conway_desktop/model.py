@@ -84,12 +84,14 @@ class Clock:
     def __init__(self): self.reset()
     def reset(self,wall=None,mono=None,speed=12):
         self.last_mono=time.monotonic() if mono is None else mono
-        self.bucket=int((time.time() if wall is None else wall)*speed)
+        self.last_wall=time.time() if wall is None else wall
+        self.bucket=int(self.last_wall*speed)
         self.speed=speed
     def due(self,speed,active,wall=None,mono=None):
         wall=time.time() if wall is None else wall; mono=time.monotonic() if mono is None else mono
         bucket=int(wall*speed)
-        if speed!=self.speed or not active or mono-self.last_mono>2 or mono<self.last_mono:
+        wall_gap=wall-self.last_wall;self.last_wall=wall
+        if speed!=self.speed or not active or mono-self.last_mono>2 or mono<self.last_mono or abs(wall_gap)>2:
             self.reset(wall,mono,speed); return False
         if speed<=1:
             result=bucket>self.bucket; self.bucket=bucket

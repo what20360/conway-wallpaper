@@ -26,6 +26,10 @@ class Rules(unittest.TestCase):
         m=Model();m.cells.fill(0);m.brush=3;m.paint(0,0,False)
         self.assertEqual(int(m.cells.sum()),9);m.paint(0,0,True);self.assertEqual(m.cells.sum(),0)
         m.generation=2**32-1;m.step();self.assertEqual(m.generation,2**32)
+    def test_suspend_when_monotonic_excludes_sleep(self):
+        clock=Clock();clock.reset(wall=.2,mono=.2,speed=1)
+        self.assertFalse(clock.due(1,True,wall=3600.2,mono=.3))
+        self.assertTrue(clock.due(1,True,wall=3601,mono=.4))
     def test_seeds(self):
         self.assertEqual(len({random_cells(i).tobytes() for i in range(256)}),256)
         np.testing.assert_array_equal(random_cells(42),random_cells(42))

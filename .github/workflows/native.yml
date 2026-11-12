@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0
       - name: Install runtime
         run: python -m pip install -r native/requirements.txt
       - name: Rules, persistence, compatibility and native controls

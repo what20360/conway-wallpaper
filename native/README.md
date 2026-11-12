@@ -9,7 +9,7 @@
 在 Kubuntu 的项目根目录执行：
 
 ```bash
-sudo apt install python3-venv libegl1 libxcb-cursor0
+sudo apt install python3-venv libegl1 libgl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0
 python3 -m venv .venv-native
 .venv-native/bin/python -m pip install -r native/requirements.txt
 .venv-native/bin/python native/run.py
