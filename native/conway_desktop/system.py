@@ -137,14 +137,19 @@ class System(QObject):
         from .ime import Fcitx
         self.ime=Fcitx(self)
         self.timer=QTimer(self);self.timer.setInterval(2000);self.timer.timeout.connect(self.refresh)
-        if enabled:self.timer.start();QTimer.singleShot(0,self.refresh)
+        self.bluetooth_timer=QTimer(self);self.bluetooth_timer.setInterval(500);self.bluetooth_timer.timeout.connect(self.refresh_bluetooth)
+        if enabled:
+            self.timer.start();self.bluetooth_timer.start()
+            QTimer.singleShot(0,self.refresh);QTimer.singleShot(0,self.refresh_bluetooth)
     def _set_error(self,key,error):
         if self.errors.get(key)!=error:LOGGER.warning('Read failure key=%s error=%s',key,'<SSID read failed>' if key=='ssid' else redact(error))
         self.errors[key]=error
-    def _read(self,key,args,parser):
+    def _read(self,key,args,parser,after=None):
         if key in self.busy:return
+        bluetooth_token=self._bluetooth_token if key in ('bluetooth','connected') else None
         def result(ok,out):
             if not self.enabled:return
+            if bluetooth_token is not None and (bluetooth_token!=self._bluetooth_token or 'bluetooth' in self.busy):return
             previous=self.state.get(key) if key!='audio' else (self.state['volume'],self.state['muted'])
             try:
                 if not ok:raise ValueError(out.strip())
@@ -160,7 +165,16 @@ class System(QObject):
                 if key=='audio':self.state.update(volume=None,muted=None)
                 else:self.state[key]=None
             self.changed.emit()
+            if after:after()
         self.commands.run('read-'+key,args,result)
+    def _refresh_connected(self):
+        if self.state['bluetooth'] is True:self._read('connected',['bluetoothctl','devices','Connected'],parse_connected_devices)
+        else:
+            self.state['connected']=0 if self.state['bluetooth'] is False else None
+            self.changed.emit()
+    def refresh_bluetooth(self):
+        if not self.enabled or 'bluetooth' in self.busy:return
+        self._read('bluetooth',['bluetoothctl','show'],parse_bluetooth,after=self._refresh_connected)
     def refresh(self):
         if not self.enabled:return
         try:
@@ -185,9 +199,6 @@ class System(QObject):
                 self._read('wifi',['nmcli','-t','-f','WIFI-HW,WIFI','general','status'],parse_wifi_state)
                 self._read('ssid',['nmcli','-t','-e','yes','-f','ACTIVE,SSID','device','wifi','list','--rescan','no'],parse_active_ssid)
         self.commands.run('devices',['nmcli','-t','-f','DEVICE,TYPE,STATE','device','status'],lambda ok,out:wifi_devices(out) if ok else self._wifi_error(out))
-        self._read('bluetooth',['bluetoothctl','show'],parse_bluetooth)
-        if self.state['bluetooth'] is True:self._read('connected',['bluetoothctl','devices','Connected'],parse_connected_devices)
-        else:self.state['connected']=0 if self.state['bluetooth'] is False else None
         cfg=configparser.ConfigParser(interpolation=None)
         try:
             cfg.read(Path(os.environ.get('XDG_CONFIG_HOME',Path.home()/'.config'))/'kdeglobals')
@@ -235,6 +246,7 @@ class System(QObject):
                 LOGGER.info('Bluetooth readback target=%s actual=%s attempt=%s',target,actual,attempt)
                 if actual is target:
                     self.state['bluetooth']=actual;self.errors.pop('bluetooth-action',None);self.busy.discard('bluetooth');self.changed.emit();LOGGER.info('Bluetooth confirmed powered=%s',actual)
+                    self._refresh_connected()
                 elif attempt<3:QTimer.singleShot(400,lambda:verify(attempt+1))
                 else:fail('蓝牙命令已返回，但适配器没有进入目标状态。\n'+redact(out))
             self.commands.run('bt-verify',['bluetoothctl','show'],result,timeout_ms=5000)
@@ -263,4 +275,4 @@ class System(QObject):
         if not any((root/(target+'.colors')).exists() for root in roots):self.notice.emit('未找到系统配色方案 '+target);return
         self._action('theme',['plasma-apply-colorscheme',target])
     def stop(self):
-        self.enabled=False;self._bluetooth_token+=1;self.timer.stop();self.ime.stop();self.commands.stop()
+        self.enabled=False;self._bluetooth_token+=1;self.timer.stop();self.bluetooth_timer.stop();self.ime.stop();self.commands.stop()

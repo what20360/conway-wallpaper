@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import numpy as np
@@ -57,6 +58,29 @@ class TelemetryAndPatterns(unittest.TestCase):
         meteor=default_cells(8);after=meteor.copy()
         for _ in range(4):after=evolve(after)
         np.testing.assert_array_equal(after,np.roll(meteor,2,axis=0))
+    def test_presets_are_mirrored_and_rain_is_uniform_through_vertical_seam(self):
+        for index in range(8,25):
+            cells=default_cells(index)
+            np.testing.assert_array_equal(cells,np.fliplr(cells),err_msg=str(index))
+            if index not in (8,9,19):np.testing.assert_array_equal(cells,np.flipud(cells),err_msg=str(index))
+        for index,columns in ((8,4),(9,6)):
+            cells=default_cells(index)
+            np.testing.assert_array_equal(cells,np.roll(cells,9,axis=0))
+            alive_columns=np.flatnonzero(cells.any(axis=0))
+            starts=alive_columns[np.r_[True,np.diff(alive_columns)>1]]
+            self.assertEqual(len(starts),columns)
+            self.assertTrue((np.diff(starts)==np.diff(starts)[0]).all())
+    def test_lexicon_patterns_keep_documented_period_or_motion(self):
+        from conway_desktop.presets import lexicon_pattern
+        for name,period,shift in (('Schick_engine',12,(0,-6)),('weekender',7,(-2,0)),('twin_bees_shuttle',46,(0,0)),('pentadecathlon',15,(0,0))):
+            p=lexicon_pattern(name);h,w=p.shape;cells=np.zeros((180,256),np.uint8);cells[70:70+h,100:100+w]=p
+            evolved=cells.copy()
+            for _ in range(period):evolved=evolve(evolved)
+            np.testing.assert_array_equal(evolved,np.roll(cells,shift,(0,1)))
+        for index,period in ((22,46),(23,15)):
+            cells=default_cells(index);evolved=cells.copy()
+            for _ in range(period):evolved=evolve(evolved)
+            np.testing.assert_array_equal(evolved,cells)
 
 class WallpaperBridge(unittest.TestCase):
     def setUp(self):
@@ -111,6 +135,68 @@ class WallpaperBridge(unittest.TestCase):
         self.view.wallpaper_mode=True;self.view.show();self.view.close()
         self.assertFalse(self.view.isVisible());self.assertTrue(self.view.timer.isActive())
         self.assertTrue(self.server.server.isListening())
+    def test_five_segment_bluetooth_bar_is_readable_from_zero_to_five(self):
+        from conway_desktop.view import THEMES
+        from PySide6.QtGui import QColor
+        self.system.state['bluetooth']=True
+        for width,height in ((1920,1080),(2560,1440)):
+            for count in range(6):
+                self.system.state['connected']=count;image=self.view.render_image(width,height)
+                box=next(r for r,_,name in self.view.regions if name=='bluetooth');unit=box.width()/58
+                for i in range(5):
+                    x=round(box.x()+(6+i*11)*unit);y=round(box.y()+51*unit)
+                    color=QColor(THEMES[self.model.palette]['clock' if i<count else 'panel'])
+                    self.assertEqual(image.pixelColor(x,y),color,(width,count,i))
+    def wait_until(self,predicate,timeout=6000):
+        if predicate():return
+        loop=QEventLoop();poll=QTimer(loop);poll.setInterval(10)
+        poll.timeout.connect(lambda:loop.quit() if predicate() else None)
+        watchdog=QTimer(loop);watchdog.setSingleShot(True);watchdog.timeout.connect(loop.quit)
+        poll.start();watchdog.start(timeout);loop.exec();poll.stop();watchdog.stop()
+        self.assertTrue(predicate(),'QML operation timed out')
+    @contextmanager
+    def presentation(self,width,height,ratio):
+        from PySide6.QtCore import QObject
+        from PySide6.QtQml import QQmlEngine,QQmlComponent
+        from PySide6.QtQuick import QQuickWindow
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);source=Path(__file__).parents[1]/'plasma-wallpaper/contents/ui'
+            qml=(source/'main.qml').read_text().replace('import org.kde.plasma.plasmoid','').replace('WallpaperItem {','Item {',1)
+            qml=qml.replace('import org.kde.plasma.core as PlasmaCore','import QtQuick.Controls as PlasmaCore').replace('contextualActions: [','property list<QtObject> contextualActions: [',1)
+            qml=qml.replace('readonly property real ratio: Screen.devicePixelRatio || 1','readonly property real ratio: '+str(ratio))
+            (root/'main.qml').write_text(qml)
+            (root/'Connection.qml').write_text('import QtQml\nQtObject { readonly property string token: "'+self.server.token+'"; readonly property string endpoint: "'+self.url+'" }')
+            engine=QQmlEngine();component=QQmlComponent(engine,QUrl.fromLocalFile(str(root/'main.qml')))
+            self.wait_until(lambda:component.status()!=QQmlComponent.Status.Loading)
+            self.assertFalse(component.isError(),str(component.errors()));item=component.create()
+            self.assertIsNotNone(item,str(component.errors()))
+            window=QQuickWindow();item.setParentItem(window.contentItem());item.setWidth(width);item.setHeight(height)
+            def front():return item.findChild(QObject,'frameA' if item.property('frontIsA') else 'frameB')
+            self.wait_until(lambda:item.property('connected') and front().property('frameWidth')==item.property('pixelWidth') and front().property('frameHeight')==item.property('pixelHeight'))
+            try:yield item,front()
+            finally:
+                item.setVisible(False);item.setParentItem(None);item.deleteLater();window.deleteLater();engine.deleteLater();APP.processEvents()
+    def test_capped_dpi_frame_fills_surface_without_aspect_distortion(self):
+        for width,height,ratio in ((2560,1440,2),(2560,1440,1.5),(2048,1152,1.25),(1280,720,2),(1920,1080,1),(2700,1440,2)):
+            with self.subTest(width=width,height=height,dpr=ratio),self.presentation(width,height,ratio) as (item,frame):
+                self.assertEqual(frame.property('width'),width);self.assertEqual(frame.property('height'),height)
+                fw,fh=frame.property('frameWidth'),frame.property('frameHeight')
+                pw,ph=frame.property('paintedWidth'),frame.property('paintedHeight')
+                self.assertAlmostEqual(pw/fw,ph/fh,places=5)
+                self.assertGreaterEqual(pw,width-2);self.assertGreaterEqual(ph,height-2)
+                self.assertLessEqual(fw,2560);self.assertLessEqual(fh,1440)
+                item.setProperty('sending',True)
+                item.enqueue('press',width*.6,height*.8,False)
+                event=item.property('inputQueue').toVariant()[0]
+                self.assertEqual(event['w'],fw);self.assertEqual(event['h'],fh)
+                self.assertAlmostEqual(event['x'],fw*.6,delta=1);self.assertAlmostEqual(event['y'],fh*.8,delta=1)
+    def test_dpi_capped_right_panel_mouse_hits_correct_control(self):
+        with self.presentation(2560,1440,2) as (item,frame):
+            self.view.render_image(frame.property('frameWidth'),frame.property('frameHeight'))
+            button=next(rect for rect,_,name in self.view.regions if name=='page-switch')
+            item.enqueue('press',button.center().x(),button.center().y(),False)
+            self.wait_until(lambda:self.view.deck=='information')
+            item.enqueue('release',button.center().x(),button.center().y(),False)
     def test_qml_presentation_fetches_native_frame_and_forwards_controls(self):
         # Test actual QML presentation with an Item root. The Plasma-specific import
         # and containment/desktop input routing require a real Plasma 6 session.

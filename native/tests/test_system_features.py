@@ -40,7 +40,7 @@ class SystemFeatures(unittest.TestCase):
         self.system.commands=Fake({'bt-unblock':(True,''),'bt-power':(True,'Changing power on succeeded'),'bt-verify':(True,'Powered: yes')})
         with patch('conway_desktop.system.read_rfkill',side_effect=[[{'name':'hci0','soft':True,'hard':False}],[]]):self.system.bluetooth()
         calls=self.system.commands.calls
-        self.assertEqual([x[0] for x in calls],['bt-unblock','bt-power','bt-verify'])
+        self.assertEqual([x[0] for x in calls],['bt-unblock','bt-power','bt-verify','read-connected'])
         self.assertEqual(calls[0][1],['rfkill','unblock','bluetooth'])
         self.assertEqual(calls[1][2]['timeout_ms'],10000)
         self.assertTrue(self.system.state['bluetooth']);self.assertNotIn('bluetooth',self.system.busy);self.assertEqual(self.notices,[])
@@ -69,6 +69,25 @@ class SystemFeatures(unittest.TestCase):
         self.system.commands=Fake({'bt-power':(True,'Changing power off succeeded'),'bt-verify':(True,'Powered: no')})
         with patch('conway_desktop.system.read_rfkill',return_value=[{'soft':True,'hard':False,'name':'hci0'}]):self.system.bluetooth()
         self.assertFalse(self.system.state['bluetooth']);self.assertFalse(any(x[0]=='bt-unblock' for x in self.system.commands.calls))
+    def test_fast_refresh_reads_connected_count_after_current_power_state(self):
+        self.assertEqual(self.system.bluetooth_timer.interval(),500)
+        self.system.commands=Fake({'read-bluetooth':(True,'Powered: yes'),
+                                  'read-connected':(True,'Device 01:02:03:04:05:06 Headset\n')})
+        self.system.refresh_bluetooth()
+        self.assertIs(self.system.state['bluetooth'],True);self.assertEqual(self.system.state['connected'],1)
+        self.assertEqual([call[0] for call in self.system.commands.calls],['read-bluetooth','read-connected'])
+        self.system.commands=Fake({'read-bluetooth':(True,'Powered: no')});self.system.refresh_bluetooth()
+        self.assertIs(self.system.state['bluetooth'],False);self.assertEqual(self.system.state['connected'],0)
+        self.assertEqual([call[0] for call in self.system.commands.calls],['read-bluetooth'])
+    def test_old_poll_cannot_overwrite_new_bluetooth_action(self):
+        callbacks=[]
+        class Delayed:
+            def run(self,key,args,callback,**kwargs):callbacks.append(callback)
+            def stop(self):pass
+        self.system.commands=Delayed();self.system.state.update(bluetooth=False,connected=0)
+        self.system.refresh_bluetooth();self.system._bluetooth_token+=1
+        callbacks[0](True,'Powered: yes')
+        self.assertIs(self.system.state['bluetooth'],False);self.assertEqual(self.system.state['connected'],0)
 
 class DisplayAndLogging(unittest.TestCase):
     def test_ssid_escaping_case_and_unicode(self):

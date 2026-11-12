@@ -39,6 +39,14 @@ class Native(unittest.TestCase):
             point=QPointF(bar.x()+(i+.5)*bar.width()/8,bar.center().y())
             event=QMouseEvent(QMouseEvent.Type.MouseButtonPress,point,point,Qt.MouseButton.LeftButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
             self.view.mousePressEvent(event);self.assertEqual(self.model.speed,speed)
+    def test_large_preview_keeps_grid_aspect_ratio(self):
+        import numpy as np
+        self.view.preview=np.ones((180,256),dtype=np.uint8)
+        image=self.view.render_image(1920,1080)
+        box=next(rect for rect,_,name in self.view.regions if name=='load')
+        pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
+        yy,xx=np.nonzero(pixels[box.y():box.y()+box.height(),box.x():box.x()+box.width()]==QColor('#a2dfb8').rgba())
+        self.assertAlmostEqual((xx.max()-xx.min()+1)/(yy.max()-yy.min()+1),256/180,delta=.03)
     def test_shift_and_right_erase(self):
         self.view.resize(1280,720);self.view.render_image(1280,720)
         for button,modifier,alive in [(Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,1),(Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,0),(Qt.MouseButton.RightButton,Qt.KeyboardModifier.NoModifier,0)]:

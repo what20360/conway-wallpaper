@@ -236,7 +236,7 @@ class View(QWidget):
         def button(name,x,y,action,on=False,color='life',enabled=True):
             region(name,x,y,48,48,action,enabled);icon(x+13,y+13,name,t[color] if on and enabled else t['muted'] if enabled else t['off'])
         def toggle(x,y,value,action,name):
-            region(name,x,y,58,48,lambda:action() if name not in self.system.busy else None,value is not None)
+            region(name,x,y,58,58 if name=='bluetooth' else 48,lambda:action() if name not in self.system.busy else None,value is not None)
             # Large tile + thumb position distinguish power even without relying on hue.
             p.fillRect(rect(x,y,58,43),t['life'] if value else t['off'])
             ink=t['panel'] if value else t['muted']
@@ -245,12 +245,14 @@ class View(QWidget):
             p.fillRect(rect(x+(35 if value else 9),y+31,14,6),t['life'] if value else t['muted'])
             if name in self.system.busy:p.fillRect(rect(x,y,58,4),t['speed'])
             if value is None:text(x+25,y+8,'?',2,t['muted'])
-            if name=='bluetooth' and value:
-                count=self.system.state.get('connected')
-                if count is None:text(x+24,y+46,'?',1,t['muted'])
-                elif count>8:text(x+12,y+46,str(count),1.5,t['clock'])
-                else:
-                    for i in range(count):dot(x+6+i*6,y+46,4,t['clock'])
+            if name=='bluetooth':
+                count=self.system.state.get('connected') if value is not False else 0
+                text(x+45,y+5,'?' if count is None else '+' if count>5 else count,1.8,ink)
+                for i in range(5):
+                    # Five large outlined cells stay visible at zero; filled cells
+                    # indicate connections, independently of the power thumb above.
+                    p.fillRect(rect(x+1+i*11,y+46,10,11),t['muted'] if count is not None else t['line'])
+                    p.fillRect(rect(x+2+i*11,y+47,8,9),t['clock'] if count is not None and i<count else t['panel'])
         def separator(y):
             for x in range(24,296,8):dot(x,y,2,t['line'])
         now=dt.datetime.fromtimestamp(self.wall_time)
@@ -261,11 +263,11 @@ class View(QWidget):
         text(24,32,now.strftime('%H:%M'),7,t['clock']);text(296,67,now.strftime('%S'),3,t['clock'],True)
         text(24,104,now.strftime('%Y.%m.%d'),3,t['text'],font=DATE_GLYPHS);text(296,104,now.isoweekday(),3,t['clock'],True)
         generation=str(self.m.generation).zfill(10)
-        text(24,145,'G',3,t['life']);text(296,145,generation,min(3,240/(6*len(generation))),t['life'],True)
+        text(24,142,'G',2,t['muted']);text(296,142,generation,min(2,240/(6*len(generation))),t['muted'],True)
         for x,label,key in ((24,'C','cpu'),(174,'M','memory')):
-            text(x,176,label,2.5,t['muted']);text(x+30,176,percent_label(self.system.state[key]),2.5,t['clock'])
+            text(x,165,label,3,t['text']);text(x+30,165,percent_label(self.system.state[key]),3,t['text'])
         for x,name,key in ((24,'down','download'),(174,'up','upload')):
-            icon(x,194,name,t['muted'],1.2);text(x+30,194,rate_label(self.system.state.get(key)),2.1,t['clock'])
+            icon(x,191,name,t['clock'],2);text(x+30,191,rate_label(self.system.state.get(key)),2.5,t['text'])
         separator(213)
         region('run',24,220,48,48,self.run_toggle)
         for y in range(7):
@@ -319,15 +321,17 @@ class View(QWidget):
                 button('left',24,445,lambda:self.backup_move(-1));button('right',249,445,lambda:self.backup_move(1))
             box=rect(24,493,272,106);p.setBrush(Qt.BrushStyle.NoBrush);p.setPen(QPen(t['line'],1));p.drawRect(box);p.setPen(Qt.PenStyle.NoPen)
             if self.preview is not None and self.preview.any():
-                ys,xs=np.nonzero(self.preview);bw=int(xs.max()-xs.min()+1);bh=int(ys.max()-ys.min()+1)
+                ys,xs=np.nonzero(self.preview);xmin=int(xs.min());ymin=int(ys.min());bw=int(xs.max())-xmin+1;bh=int(ys.max())-ymin+1
                 ps=max(1,min(box.width()//(bw+4),box.height()//(bh+4),12))
                 # Large patterns are sampled only in preview; stored grid remains full-size.
                 if bw*ps>box.width() or bh*ps>box.height():
-                    img=QImage(W,H,QImage.Format.Format_RGB32);img.fill(t['panel']);ip=QPainter(img);ip.setPen(Qt.PenStyle.NoPen);ip.setBrush(t['life']);ip.drawRects([QRect(int(x),int(y),1,1) for y,x in zip(ys,xs)]);ip.end()
-                    p.drawImage(box,img)
+                    img=QImage(bw,bh,QImage.Format.Format_RGB32);img.fill(t['panel']);ip=QPainter(img);ip.setPen(Qt.PenStyle.NoPen);ip.setBrush(t['life'])
+                    ip.drawRects([QRect(int(x)-xmin,int(y)-ymin,1,1) for y,x in zip(ys,xs)]);ip.end()
+                    thumbnail=img.scaled(box.size(),Qt.AspectRatioMode.KeepAspectRatio,Qt.TransformationMode.FastTransformation)
+                    p.drawImage(QPoint(box.x()+(box.width()-thumbnail.width())//2,box.y()+(box.height()-thumbnail.height())//2),thumbnail)
                 else:
                     bx=box.x()+(box.width()-bw*ps)//2;by=box.y()+(box.height()-bh*ps)//2;p.setBrush(t['life'])
-                    p.drawRects([QRect(bx+(int(x)-int(xs.min()))*ps,by+(int(y)-int(ys.min()))*ps,max(1,ps-1),max(1,ps-1)) for y,x in zip(ys,xs)])
+                    p.drawRects([QRect(bx+(int(x)-xmin)*ps,by+(int(y)-ymin)*ps,max(1,ps-1),max(1,ps-1)) for y,x in zip(ys,xs)])
             region('load',24,493,272,106,self.load_selected,self.page=='bank')
             if self.page=='bank':
                 button('save',24,612,self.save_slot,self.store.custom(self.m.preset) if self.store else False,'life',self.m.mode=='preset')
@@ -345,14 +349,14 @@ class View(QWidget):
             for i in range(9):p.fillRect(rect(29+i*4,687+i*4,6,6),t['panel'])
         region('volume-bar',90,685,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,685,206,36).x())/rect(90,685,206,36).width()))),volume is not None)
         for i in range(20):dot(92+i*10,696,7,t['line'] if muted else t['clock'] if volume is not None and i<round(volume*20) else t['off'])
-        toggle(24,737,state['wifi'],self.system.wifi,'wifi');toggle(99,737,state['bluetooth'],self.system.bluetooth,'bluetooth')
+        toggle(24,732,state['wifi'],self.system.wifi,'wifi');toggle(99,732,state['bluetooth'],self.system.bluetooth,'bluetooth')
         label=wifi_label(state);self._ssid_rect=rect(174,737,122,46)
         key=(label,self._ssid_rect.width(),self._ssid_rect.height(),self.m.palette)
         if not self._ssid_cache or self._ssid_cache[0]!=key:
             self._ssid_cache=(key,ssid_bitmap(label,self._ssid_rect.width(),self._ssid_rect.height(),t['clock']))
         p.drawImage(self._ssid_rect.topLeft(),self._ssid_cache[1])
         if self.system.busy:dot(159,760,4,t['speed'])
-        separator(789)
+        separator(795)
         button('clear',24,800,self.clear,False,'danger');button('brush',92,800,self.brush,self.m.brush>1)
         text(155,812,self.m.brush,3,t['life']);button('trail',190,800,self.trails,self.m.trails);button('full',249,800,self.fullscreen)
     def paintEvent(self,event):

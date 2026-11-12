@@ -117,3 +117,10 @@ Qt 窗口大小通常以逻辑像素表示，不能把它误认为屏幕物理�
 - https://github.com/fcitx/fcitx5-rime/blob/master/src/rimeaction.cpp
 - https://github.com/fcitx/fcitx5/blob/master/src/modules/notificationitem/dbusmenu.cpp
 - https://www.kernel.org/doc/html/latest/networking/statistics.html
+
+## 10. 0.3.1 修正
+
+- 逻辑呈现尺寸由宿主 Item 决定，Image 锚定整个父项并保持比例。源图用统一缩放系数控制在现有上限，不能把封顶后的源宽高除以 DPR 当作呈现尺寸。输入按当前显示帧的实际宽高、居中偏移与源尺寸换算，兼容切换分辨率期间旧帧仍显示的状态。
+- 蓝牙单独使用 500 ms 定时器，Powered 回读后立即读取 Connected 数量；其余系统采样仍为 2 秒。QProcess 按键去重，前一次命令未结束不会堆积；控制操作期间暂停读数，旧轮询不能覆盖新操作结果。没有使用更频繁的扫描或配对查询。
+- 设备条使用五个有边框的大格、0–5 数值和超过上限的 +，常态与零连接均可辨认，不再靠几个小像素表示数量。系统读数增强，代数降为次要层级。
+- 原有大图案改为均匀对称，向下舰队保持横向镜像、竖直 9 格周期，减少横向列数；不做会破坏飞行器的贴邻排列。新增 020–024 的词典数据独立注明来源和 CC BY-SA 3.0，详见 PATTERNS.md。

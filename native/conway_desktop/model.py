@@ -14,7 +14,7 @@ def evolve(cells):
     return ((neighbors == 3) | ((cells != 0) & (neighbors == 2))).astype(np.uint8)
 
 def default_cells(index):
-    if 8<=index<=19:
+    if 8<=index<=24:
         from .presets import large_preset
         return large_preset(index)
     c = np.zeros((H,W), dtype=np.uint8)
