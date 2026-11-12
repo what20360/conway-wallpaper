@@ -19,7 +19,9 @@ GLYPHS.update({'中':{'w':9,'r':[16,16,511,273,273,511,16,16,16]},
                '英':{'w':9,'r':[68,511,68,16,254,146,254,40,68,387]},
                '，':{'w':3,'r':[0,0,0,3,3,2,4]},
                '。':{'w':5,'r':[0,0,0,14,17,17,14]},
-               ',':{'w':3,'r':[0,0,0,0,3,2,4]}})
+               ',':{'w':3,'r':[0,0,0,0,3,2,4]},
+               '￥':{'w':7,'r':[65,34,20,8,62,8,62,8,8]},
+               '$':{'w':7,'r':[8,30,40,40,28,10,10,60,8]}})
 DATE_GLYPHS=json.loads(Path(__file__).with_name('date-pixels.json').read_text())
 ICONS.update({
  'close':['1000001','0100010','0010100','0001000','0010100','0100010','1000001'],
@@ -58,7 +60,7 @@ def ssid_bitmap(name,width,height,color):
     painter=QPainter(image);painter.setRenderHint(QPainter.RenderHint.TextAntialiasing,False)
     font=QFont('Sans Serif');font.setStyleStrategy(QFont.StyleStrategy.NoAntialias)
     clean=''.join(ch if ch.isprintable() else ' ' for ch in name)
-    for size in (8,7,6):
+    for size in (10,9,8):
         font.setPixelSize(size);painter.setFont(font)
         if painter.fontMetrics().boundingRect(QRect(0,0,w,10000),Qt.TextFlag.TextWrapAnywhere,clean).height()<=h:break
     painter.setPen(color)
@@ -90,6 +92,7 @@ class View(QWidget):
             if not initial:self.m.palette=value;self.debounce.start()
         self.update()
     def unavailable(self,name):
+        name=name.removeprefix('status-')
         key='audio' if name in ('volume','mute','volume-bar') else 'theme' if name in ('sun','moon') else name
         message=self.system.errors.get(key)
         if name=='save' and self.m.mode=='random':message='请先切换到 P 预设模式再保存。'
@@ -240,19 +243,17 @@ class View(QWidget):
         def status_icon(name,x,y,value,action,glyph=None):
             key='audio' if name in ('mute','volume') else name
             region(name,x,y,48,58 if name=='bluetooth' else 48,lambda:action() if key not in self.system.busy else None,value is not None)
-            ink=t['muted'] if value is None else t['life'] if value else t['danger']
+            ink=t['muted'] if value is None else t['life'] if value else t['off']
             # Same 7x7 block grid and 28x28 glyph box; no solid tile or slider.
             icon(x+10,y+10,glyph or name,ink,4)
             if key in self.system.busy:dot(x+41,y+38,3,t['speed'])
             if value is None and name!='bluetooth':text(x+40,y+3,'?',1.8,t['muted'])
             if name=='bluetooth':
                 count=self.system.state.get('connected') if self.system.state['bluetooth'] is not False else 0
-                text(x+40,y+3,'?' if count is None else '+' if count>5 else count,1.8,ink)
-                for i in range(5):
-                    # Five large outlined cells stay visible at zero; filled cells
-                    # indicate connections, independently of the power glyph above.
-                    p.fillRect(rect(x-4+i*11,y+46,10,11),t['muted'] if count is not None else t['line'])
-                    p.fillRect(rect(x-3+i*11,y+47,8,9),t['clock'] if count is not None and i<count else t['panel'])
+                if count is None:text(x+40,y+3,'?',1.8,t['muted'])
+                elif count>5:text(x+40,y+3,'+',1.8,ink)
+                for i in range(min(5,count or 0)):
+                    dot(x-3+i*11,y+47,8,t['clock'])
         def separator(y):
             for x in range(24,296,8):dot(x,y,2,t['line'])
         now=dt.datetime.fromtimestamp(self.wall_time)
@@ -263,6 +264,12 @@ class View(QWidget):
         if self.wallpaper_mode:
             region('desktop-edit',68,0,40,28,self.toggle_desktop_editing)
             icon(77,3,'brush',t['life'] if self.desktop_editing else t['muted'],2)
+        for x,key,action in ((122,'ime',self.system.ime.toggle_mode),(192,'punctuation',self.system.ime.toggle_punctuation)):
+            value=self.system.state[key]
+            region('status-'+key,x,0,54,28,lambda action=action:action() if not self.system.busy.intersection(('ime','punctuation')) else None,value is not None)
+            symbol=('中' if value else '英') if key=='ime' else ('￥' if value else '$')
+            text(x+15,3,symbol if value is not None else '?',2,t['muted'] if value is None else t['life'] if value else t['clock'])
+            if key in self.system.busy:dot(x+45,20,3,t['speed'])
         text(24,32,now.strftime('%H:%M'),7,t['clock']);text(296,67,now.strftime('%S'),3,t['clock'],True)
         text(24,104,now.strftime('%Y.%m.%d'),3,t['text'],font=DATE_GLYPHS);text(296,104,now.isoweekday(),3,t['clock'],True)
         generation=str(self.m.generation).zfill(10)
@@ -301,8 +308,8 @@ class View(QWidget):
                 p.fillRect(rect(x,437,122,94),t['life'] if value else t['clock'] if value is False else t['off'])
                 color=t['panel'] if value is not None else t['muted']
                 text(x+10,443,label,1.8,color)
-                symbols=('中' if value else '英') if key=='ime' else ('，。' if value else ',.')
-                text(x+(42 if key=='ime' else 38),466,symbols if value is not None else '?',4,color)
+                symbols=('中' if value else '英') if key=='ime' else ('￥' if value else '$')
+                text(x+(42 if key=='ime' else 47),466,symbols if value is not None else '?',4,color)
                 if busy:p.fillRect(rect(x,437,122,5),t['speed'])
             for y,name,key in ((563,'down','download'),(607,'up','upload')):
                 icon(24,y,name,t['clock'],3)
@@ -345,8 +352,8 @@ class View(QWidget):
         state=self.system.state;volume=state['volume']
         muted=state['muted'] is True
         status_icon('mute' if muted else 'volume',24,682,None if state['muted'] is None else not muted,self.system.mute,'volume')
-        region('volume-bar',90,685,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,685,206,36).x())/rect(90,685,206,36).width()))),volume is not None)
-        for i in range(20):dot(92+i*10,696,7,t['line'] if muted else t['clock'] if volume is not None and i<round(volume*20) else t['off'])
+        region('volume-bar',90,688,206,36,lambda:self.system.volume(max(0,min(1,(self.hover.x()-rect(90,688,206,36).x())/rect(90,688,206,36).width()))),volume is not None)
+        for i in range(20):dot(92+i*10,702.5,7,t['line'] if muted else t['clock'] if volume is not None and i<round(volume*20) else t['off'])
         status_icon('wifi',24,732,state['wifi'],self.system.wifi)
         status_icon('bluetooth',99,732,self.system.pending.get('bluetooth',state['bluetooth']),self.system.bluetooth)
         label=wifi_label(state);self._ssid_rect=rect(174,737,122,46)

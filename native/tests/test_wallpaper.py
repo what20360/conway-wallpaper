@@ -136,38 +136,57 @@ class WallpaperBridge(unittest.TestCase):
         self.view.wallpaper_mode=True;self.view.show();self.view.close()
         self.assertFalse(self.view.isVisible());self.assertTrue(self.view.timer.isActive())
         self.assertTrue(self.server.server.isListening())
-    def test_five_segment_bluetooth_bar_is_readable_from_zero_to_five(self):
+    def test_bluetooth_connections_are_solid_squares_without_empty_frames(self):
         from conway_desktop.view import THEMES
         from PySide6.QtGui import QColor
         self.system.state['bluetooth']=True
         for width,height in ((1920,1080),(2560,1440)):
-            for count in range(6):
+            for count in (0,1,2,3,4,5,None,8):
                 self.system.state['connected']=count;image=self.view.render_image(width,height)
                 box=next(r for r,_,name in self.view.regions if name=='bluetooth');unit=box.width()/48
+                # Sample both center and the old frame's edge: absent slots must
+                # be entirely background, with no outlines at zero/unknown.
                 for i in range(5):
-                    x=round(box.x()+(1+i*11)*unit);y=round(box.y()+51*unit)
-                    color=QColor(THEMES[self.model.palette]['clock' if i<count else 'panel'])
-                    self.assertEqual(image.pixelColor(x,y),color,(width,count,i))
+                    for dx,dy in ((1,51),(-3.5,46.5)):
+                        x=round(box.x()+(dx+i*11)*unit);y=round(box.y()+dy*unit)
+                        expected='clock' if dx==1 and count is not None and i<count else 'panel'
+                        self.assertEqual(image.pixelColor(x,y),QColor(THEMES[self.model.palette][expected]),(width,count,i,dx))
     def test_status_icons_share_color_states_without_solid_backgrounds(self):
         from conway_desktop.view import THEMES
         from PySide6.QtGui import QColor
-        palette=THEMES[self.model.palette]
-        for active in (True,False):
-            self.system.state.update(volume=.5,muted=not active,wifi=active,bluetooth=active,connected=0)
-            image=self.view.render_image(2560,1440)
-            pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
-            for name in ('volume' if active else 'mute','wifi','bluetooth'):
-                box=next(r for r,_,n in self.view.regions if n==name);unit=box.width()/48
-                # No colored tile at the button corner; the whole glyph carries state.
-                self.assertEqual(image.pixelColor(round(box.x()+3*unit),round(box.y()+3*unit)),QColor(palette['panel']))
-                ink=QColor(palette['life' if active else 'danger']).rgba()
-                body=pixels[box.y():box.y()+round(45*unit),box.x():box.x()+box.width()]
-                self.assertGreater(np.count_nonzero(body==ink),100)
+        for theme,palette in THEMES.items():
+            self.model.palette=theme
+            background=QColor(palette['panel'])
+            distance=lambda key:sum((a-b)**2 for a,b in zip(QColor(palette[key]).getRgb()[:3],background.getRgb()[:3]))
+            self.assertGreater(distance('life'),distance('off')*4)
+            for active in (True,False):
+                self.system.state.update(volume=.5,muted=not active,wifi=active,bluetooth=active,connected=0)
+                image=self.view.render_image(2560,1440)
+                pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
+                for name in ('volume' if active else 'mute','wifi','bluetooth'):
+                    box=next(r for r,_,n in self.view.regions if n==name);unit=box.width()/48
+                    self.assertEqual(image.pixelColor(round(box.x()+3*unit),round(box.y()+3*unit)),background)
+                    ink=QColor(palette['life' if active else 'off']).rgba()
+                    body=pixels[box.y():box.y()+round(45*unit),box.x():box.x()+box.width()]
+                    self.assertGreater(np.count_nonzero(body==ink),100)
         self.system.pending['bluetooth']=True;self.system.busy.add('bluetooth')
         image=self.view.render_image(2560,1440);box=next(r for r,_,n in self.view.regions if n=='bluetooth')
         pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
         self.assertGreater(np.count_nonzero(pixels[box.y():box.y()+60,box.x():box.x()+box.width()]==QColor(palette['life']).rgba()),100)
         self.assertIs(self.system.state['bluetooth'],False)
+    def test_volume_bar_and_speaker_have_same_vertical_center(self):
+        from conway_desktop.view import THEMES
+        from PySide6.QtGui import QColor
+        self.system.state.update(volume=.5,muted=False)
+        for width,height in ((1920,1080),(2560,1440)):
+            image=self.view.render_image(width,height)
+            pixels=np.frombuffer(image.bits(),np.uint32).reshape(image.height(),image.bytesPerLine()//4)
+            centers=[]
+            for name,key in (('volume','life'),('volume-bar','clock')):
+                box=next(r for r,_,n in self.view.regions if n==name)
+                ys,xs=np.nonzero(pixels[box.y():box.y()+box.height(),box.x():box.x()+box.width()]==QColor(THEMES[self.model.palette][key]).rgba())
+                centers.append(box.y()+(ys.min()+ys.max())/2)
+            self.assertLessEqual(abs(centers[0]-centers[1]),1)
     def wait_until(self,predicate,timeout=6000):
         if predicate():return
         loop=QEventLoop();poll=QTimer(loop);poll.setInterval(10)

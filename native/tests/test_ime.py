@@ -72,6 +72,25 @@ class InputMethods(unittest.TestCase):
     def test_missing_service_has_unknown_states(self):
         self.bus.failed=True;self.system.ime.refresh()
         self.assertIsNone(self.system.state['ime']);self.assertIsNone(self.system.state['punctuation']);self.assertIn('ime',self.system.errors)
+    def test_persistent_mode_and_currency_controls_on_both_pages(self):
+        from conway_desktop.view import GLYPHS
+        self.assertIn('￥',GLYPHS);self.assertIn('$',GLYPHS)
+        self.system.ime.refresh();view=View(Model(),None,self.system);view.wallpaper_mode=True
+        try:
+            for deck in ('patterns','information'):
+                view.deck=deck
+                for w,h in ((1920,1080),(2560,1440)):
+                    view.render_image(w,h);regions={name:(r,action) for r,action,name in view.regions}
+                    for name in ('status-ime','status-punctuation'):
+                        r,action=regions[name];self.assertLess(r.bottom(),h*.035)
+                        for other,(box,_) in regions.items():
+                            if other!=name:self.assertFalse(r.intersects(box),(name,other))
+                    with patch('conway_desktop.ime.QTimer.singleShot',side_effect=lambda _,callback:callback()):
+                        previous=self.system.state['ime'];regions['status-ime'][1]()
+                        self.assertIs(self.system.state['ime'],not previous)
+                        previous=self.system.state['punctuation'];regions['status-punctuation'][1]()
+                        self.assertIs(self.system.state['punctuation'],not previous)
+        finally:view.timer.stop();view.deleteLater();APP.processEvents()
     def test_information_page_layout_and_no_canvas_close(self):
         view=View(Model(),None,self.system);view.deck='information'
         try:
