@@ -28,9 +28,9 @@ jobs:
         run: bash -n native/update.sh
       - name: Rules, persistence, compatibility and native controls
         run: python -m unittest discover -s native/tests -v
-      - name: Download and install immutable revision end to end
+      - name: Download default branch without API and install end to end
         if: github.event_name != 'pull_request'
-        run: bash native/update.sh --install-dir "${RUNNER_TEMP}/conway-installer-smoke" --ref "${GITHUB_SHA}"
+        run: bash native/update.sh --install-dir "${RUNNER_TEMP}/conway-installer-smoke"
       - name: Render target resolutions
         run: |
           python native/run.py --render /tmp/native-1080.png --resolution 1920x1080 --no-system

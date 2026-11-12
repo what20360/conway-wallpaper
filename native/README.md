@@ -19,7 +19,7 @@ curl -fL https://raw.githubusercontent.com/what20360/conway-wallpaper/main/nativ
 bash /tmp/conway-update.sh
 ```
 
-脚本会下载固定提交、创建／复用虚拟环境、安装 Python 依赖并验证原生 Qt 绘制，成功后才启用新版，同时添加应用菜单入口。已有预设与检查点不会迁移或删除，仍使用原来的 Qt 用户数据目录。原先带自定义 `--data-dir` 启动的用户，之后也应继续传同一个目录。
+脚本会直接下载完整源码快照（不查询 GitHub API），从 ZIP 注释读取提交号；没有注释时用内容摘要标识版本。随后创建／复用虚拟环境、安装 Python 依赖并验证原生 Qt 绘制，成功后才启用新版，同时添加应用菜单入口。已有预设与检查点不会迁移或删除，仍使用原来的 Qt 用户数据目录。原先带自定义 `--data-dir` 启动的用户，之后也应继续传同一个目录。
 
 ```bash
 # 启动；支持继续追加 --fullscreen、--data-dir 等原生应用参数
@@ -75,3 +75,8 @@ QT_QPA_PLATFORM=offscreen .venv-native/bin/python native/run.py --render /tmp/co
 下图由本程序通过 Qt offscreen 绘制，系统控制因无 KDE 会话而显示不可用。
 
 ![1080p 原生界面](docs/preview-1080.png)
+
+
+### 旧脚本提示 HTTP 403: rate limit exceeded
+
+旧版默认会调用 GitHub API 查询版本，可能被公共出口 IP 的限额阻止。新版不再依赖该 API，直接下载源码快照。请重新下载 update.sh 再执行，不要继续运行缓存的旧 `/tmp/conway-update.sh`。无需修改 Qt 图形库，也无需提供 GitHub Token。若下载服务本身仍返回 403／429，新版会明确打印网络地址与错误类型。

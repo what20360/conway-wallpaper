@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import shutil
+import urllib.error
 ROOT=Path(__file__).resolve().parents[1]
 code=(ROOT/'update.sh').read_text().split("<<'PY'\n",1)[1].rsplit('\nPY',1)[0]
 ns={'__name__':'installer_test'};exec(compile(code,'update.sh','exec'),ns)
@@ -17,9 +19,44 @@ class Installer(unittest.TestCase):
     def tearDown(self):self.temp.cleanup()
     def release(self,name):
         release=self.root/'releases'/name;release.mkdir(parents=True);(release/'READY').write_text('ready');return release
-    def test_fixed_commit_needs_no_api_lookup(self):
-        self.assertEqual(ns['remote_commit']('a'*40,self.root),'a'*40)
-        self.assertFalse((self.root/'commit.json').exists())
+    def source_fixture(self,comment=b''):
+        archive=self.root/'fixture.zip';self.archive(archive,'main')
+        with zipfile.ZipFile(archive,'a') as zipped:zipped.comment=comment
+        return archive
+    def test_default_download_never_calls_api(self):
+        sha='a'*40;fixture=self.source_fixture(sha.encode());folder=self.root/'download';folder.mkdir();urls=[]
+        def download(url,target,**kwargs):
+            urls.append(url);self.assertNotIn('api.github.com',url);shutil.copyfile(fixture,target)
+        with patch.dict(ns,{'download':download}):revision,archive=ns['fetch_source']('main',folder)
+        self.assertEqual(revision,sha);self.assertEqual(len(urls),1);self.assertIn('/zip/refs/heads/main',urls[0])
+        destination=self.root/'unpack';destination.mkdir();ns['unpack'](archive,destination,revision)
+        self.assertTrue((destination/'run.py').exists())
+    def test_fixed_commit_download_needs_no_api(self):
+        sha='b'*40;fixture=self.source_fixture(sha.encode());folder=self.root/'download';folder.mkdir();urls=[]
+        def download(url,target,**kwargs):urls.append(url);shutil.copyfile(fixture,target)
+        with patch.dict(ns,{'download':download}):revision,archive=ns['fetch_source'](sha,folder)
+        self.assertEqual(revision,sha);self.assertEqual(urls,['https://codeload.github.com/what20360/conway-wallpaper/zip/'+sha])
+    def test_missing_comment_uses_content_identity(self):
+        fixture=self.source_fixture();folder=self.root/'download';folder.mkdir()
+        with patch.dict(ns,{'download':lambda url,target:shutil.copyfile(fixture,target)}):revision,archive=ns['fetch_source']('main',folder)
+        self.assertEqual(revision,'archive-'+hashlib.sha256(archive.read_bytes()).hexdigest())
+        destination=self.root/'unpack';destination.mkdir();ns['unpack'](archive,destination,revision)
+        self.assertTrue((destination/'run.py').exists())
+    def test_branch_404_tries_tag_but_403_does_not_retry(self):
+        fixture=self.source_fixture(b'a'*40);folder=self.root/'download';folder.mkdir();urls=[]
+        def download(url,target):
+            urls.append(url)
+            if '/heads/' in url:raise urllib.error.HTTPError(url,404,'not found',{},None)
+            shutil.copyfile(fixture,target)
+        with patch.dict(ns,{'download':download}):ns['fetch_source']('v1',folder)
+        self.assertIn('/tags/v1',urls[-1])
+        error=urllib.error.HTTPError('https://codeload.github.com/test',403,'rate limit exceeded',{},None)
+        with patch.dict(ns,{'download':lambda *args:(_ for _ in ()).throw(error)}):
+            with self.assertRaises(urllib.error.HTTPError):ns['fetch_source']('main',folder)
+        self.assertIn('网络／下载',ns['failure_message'](error))
+    def test_wrong_commit_in_zip_is_rejected(self):
+        fixture=self.source_fixture(b'a'*40)
+        with self.assertRaises(RuntimeError):ns['archive_revision'](fixture,'b'*40)
     def test_activation_and_offline_rollback(self):
         a=self.release('a');b=self.release('b');ns['activate'](self.root,a);ns['activate'](self.root,b)
         self.assertEqual((self.root/'previous').resolve(),a)

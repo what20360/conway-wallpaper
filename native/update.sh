@@ -10,7 +10,6 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
-import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -22,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import venv
@@ -31,7 +31,8 @@ REPO='what20360/conway-wallpaper'
 LOG=logging.getLogger('update')
 
 def download(url,target,limit=64*1024*1024):
-    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.2','Accept':'application/vnd.github+json'})
+    LOG.info('Download source url=%s',url)
+    request=urllib.request.Request(url,headers={'User-Agent':'ConwayDesktopUpdater/0.2.1','Accept':'application/zip, */*'})
     with urllib.request.urlopen(request,timeout=30) as response,open(target,'wb') as out:
         size=0
         while chunk:=response.read(1024*1024):
@@ -39,18 +40,42 @@ def download(url,target,limit=64*1024*1024):
             if size>limit:raise RuntimeError('下载文件超过大小限制')
             out.write(chunk)
 
-def remote_commit(ref,folder):
-    if re.fullmatch('[0-9a-f]{40}',ref):return ref
-    file=folder/'commit.json'
-    download('https://api.github.com/repos/'+REPO+'/commits/'+urllib.parse.quote(ref,safe=''),file,1024*1024)
-    sha=json.loads(file.read_text())['sha']
-    if not re.fullmatch('[0-9a-f]{40}',sha):raise RuntimeError('GitHub 返回了无效提交号')
-    return sha
+def archive_revision(archive,expected=None):
+    with zipfile.ZipFile(archive) as zipped:
+        comment=zipped.comment.decode('ascii',errors='ignore').strip()
+    if re.fullmatch('[0-9a-f]{40}',comment):
+        if expected and comment!=expected:raise RuntimeError('归档提交号与请求不符')
+        return comment
+    if expected:return expected
+    # A coherent downloaded snapshot remains identifiable without any API lookup.
+    return 'archive-'+hashlib.sha256(archive.read_bytes()).hexdigest()
+
+def fetch_source(ref,folder):
+    archive=folder/'source.zip'
+    if re.fullmatch('[0-9a-f]{40}',ref):
+        download(f'https://codeload.github.com/{REPO}/zip/{ref}',archive)
+        return archive_revision(archive,ref),archive
+    quoted=urllib.parse.quote(ref,safe='/')
+    try:download(f'https://codeload.github.com/{REPO}/zip/refs/heads/{quoted}',archive)
+    except urllib.error.HTTPError as exc:
+        if exc.code!=404:raise
+        download(f'https://codeload.github.com/{REPO}/zip/refs/tags/{quoted}',archive)
+    return archive_revision(archive),archive
 
 def unpack(archive,destination,sha):
-    prefix=f'conway-wallpaper-{sha}/native/';total=0;count=0
+    total=0;count=0
     with zipfile.ZipFile(archive) as zipped:
+        roots={member.filename.split('/')[0] for member in zipped.infolist() if member.filename}
+        if len(roots)!=1:raise RuntimeError('归档必须只有一个仓库根目录')
+        root=roots.pop()
+        if not root.startswith('conway-wallpaper-'):raise RuntimeError('归档不是预期仓库')
+        if sha.startswith('archive-'):
+            if 'archive-'+hashlib.sha256(archive.read_bytes()).hexdigest()!=sha:raise RuntimeError('归档内容标识不符')
+        else:archive_revision(archive,sha)
+        prefix=root+'/native/'
         for member in zipped.infolist():
+            path=PurePosixPath(member.filename)
+            if path.is_absolute() or '..' in path.parts:raise RuntimeError('归档路径不安全')
             if not member.filename.startswith(prefix):continue
             relative=PurePosixPath(member.filename[len(prefix):])
             if not relative.parts or member.is_dir():continue
@@ -81,7 +106,9 @@ def activate(root,release):
 def command(args,**kwargs):
     LOG.info('Run %s',shlex.join(map(str,args)))
     try:subprocess.run(list(map(str,args)),check=True,**kwargs)
-    except subprocess.CalledProcessError as exc:raise RuntimeError('命令失败：'+shlex.join(map(str,args))) from exc
+    except subprocess.CalledProcessError as exc:
+        stage='Qt 启动／绘制验证失败，请查看前面的具体错误和 README 图形依赖' if '--render' in list(map(str,args)) else 'Python 依赖安装失败，请查看前面的 pip 输出'
+        raise RuntimeError(stage+'；命令：'+shlex.join(map(str,args))) from exc
 
 def prepared_release(root,sha):
     current=root/'current'
@@ -163,10 +190,11 @@ def main(argv=None):
             release=previous.resolve()
         else:
             with tempfile.TemporaryDirectory(prefix='download-',dir=root) as temporary:
-                folder=Path(temporary);sha=remote_commit(args.ref,folder);release=prepared_release(root,sha)
+                folder=Path(temporary)
+                print('正在直接下载源码归档（不查询 GitHub API）……',flush=True)
+                sha,archive=fetch_source(args.ref,folder);release=prepared_release(root,sha)
                 if not (release/'READY').is_file() or args.repair:
-                    print('正在下载版本 '+sha[:12]+'……',flush=True)
-                    archive=folder/'source.zip';download(f'https://codeload.github.com/{REPO}/zip/{sha}',archive)
+                    print('正在准备版本 '+sha[:16]+'……',flush=True)
                     release=prepare(root,sha,archive,args.repair)
         launchers(root,Path.home());activate(root,release);LOG.info('Activated release=%s',release.name)
     print('已准备版本：'+release.name+'\n启动：'+str(Path.home()/'.local/bin/conway-desktop')+'\n再次更新：'+str(Path.home()/'.local/bin/conway-desktop-update')+'\n安装日志：'+str(root/'update.log'))
@@ -174,10 +202,20 @@ def main(argv=None):
     if args.run:subprocess.Popen([str(Path.home()/'.local/bin/conway-desktop')],start_new_session=True)
     return 0
 
+def failure_message(exc):
+    if isinstance(exc,urllib.error.HTTPError):
+        if exc.code in (403,429):return f'下载服务拒绝请求或限流（HTTP {exc.code}）：{exc.url}。这是网络／下载错误，与 Qt 图形库无关。'
+        if exc.code==404:return f'未找到指定分支、标签或提交（HTTP 404）：{exc.url}'
+        return f'下载服务返回 HTTP {exc.code}：{exc.url}'
+    if isinstance(exc,urllib.error.URLError):return '网络连接失败：'+str(exc.reason)
+    return str(exc)
+
 if __name__=='__main__':
     try:raise SystemExit(main())
     except (Exception,KeyboardInterrupt) as exc:
         LOG.exception('Update failed')
-        print('下载／更新失败：'+str(exc)+'\n旧版未切换；若缺少系统图形库，请按 README 安装 Qt 依赖后重试。',file=sys.stderr)
+        print('下载／更新失败：'+failure_message(exc)+'\n用户预设和检查点未被修改。',file=sys.stderr)
+        for handler in LOG.handlers:
+            if hasattr(handler,'baseFilename'):print('安装日志：'+handler.baseFilename,file=sys.stderr)
         raise SystemExit(1)
 PY
