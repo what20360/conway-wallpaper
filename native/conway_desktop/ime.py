@@ -59,7 +59,7 @@ def args(service,path,interface,method,signature='',*values):
 
 class Fcitx(QObject):
     def __init__(self,system):
-        super().__init__(system);self.system=system;self.polling=False;self.after=None;self.engine=None;self.menu=None;self.action=None;self.diagnostic={'stage':'not-read'}
+        super().__init__(system);self.system=system;self.polling=False;self.after=None;self.engine=None;self.menu=None;self.action=None;self.diagnostic={'stage':'not-read'};self.quiet_punctuation=False
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.refresh)
         if system.enabled:self.timer.start();QTimer.singleShot(0,self.refresh)
     def call(self,argv,callback,key='ime-read'):
@@ -156,11 +156,18 @@ class Fcitx(QObject):
         def verify():
             self.system.busy.discard(key)
             LOGGER.info('Input control readback key=%s target=%s actual=%s',key,target,self.system.state[key])
-            if self.system.state[key] is not target:self.system.notice.emit('输入法状态未进入目标值；输入焦点可能已变化，或当前方案不支持此操作。')
+            if self.system.state[key] is not target and not self.quiet_failure(key):self.system.notice.emit('输入法状态未进入目标值；输入焦点可能已变化，或当前方案不支持此操作。')
+            if key=='punctuation':self.quiet_punctuation=False
             self.system.changed.emit()
         QTimer.singleShot(200,lambda:self.refresh(after=verify))
+    def quiet_failure(self,key):
+        return key=='punctuation' and (self.quiet_punctuation or self.system.state.get('ime') is False)
     def control_failure(self,key):
-        self.system.busy.discard(key);self.system.notice.emit(self.system.errors.get(key) or 'Fcitx5 操作失败，请确认输入法服务、托盘和当前输入方案。');self.system.changed.emit()
+        self.system.busy.discard(key);quiet=self.quiet_failure(key)
+        LOGGER.warning('Input control failed key=%s englishQuiet=%s',key,quiet)
+        if not quiet:self.system.notice.emit(self.system.errors.get(key) or 'Fcitx5 操作失败，请确认输入法服务、托盘和当前输入方案。')
+        if key=='punctuation':self.quiet_punctuation=False
+        self.system.changed.emit()
     def toggle_mode(self):
         key='ime'
         if self.system.busy.intersection(('ime','punctuation')) or not self.system.enabled:return
@@ -189,6 +196,7 @@ class Fcitx(QObject):
     def toggle_punctuation(self):
         key='punctuation'
         if self.system.busy.intersection(('ime','punctuation')) or not self.system.enabled:return
+        self.quiet_punctuation=self.system.state.get('ime') is False
         self.system.busy.add(key);self.system.changed.emit()
         def perform():
             def refreshed():

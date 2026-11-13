@@ -22,13 +22,15 @@ def main(argv=None):
     parser.add_argument('--debug',action='store_true',help='记录详细命令诊断，不记录 SSID')
     parser.add_argument('--log-dir',type=Path,help='指定日志目录')
     parser.add_argument('--diagnose',action='store_true',help='收集只读系统诊断后退出')
+    parser.add_argument('--install-service',action='store_true',help='安装用户级 systemd 壁纸服务；打印启用命令，不自动启用')
     parser.add_argument('--wallpaper-info',action='store_true',help='读取正在运行的壁纸前端版本、宿主尺寸与 DPI 后退出')
     parser.add_argument('--render',type=Path,help='导出原生渲染图并退出，不加载用户数据或控制系统')
     args=parser.parse_args(argv)
-    if args.wallpaper_info and (args.render or args.wallpaper or args.install_wallpaper or args.diagnose):parser.error('--wallpaper-info 必须单独运行')
+    if args.wallpaper_info and (args.render or args.wallpaper or args.install_wallpaper or args.diagnose or args.install_service):parser.error('--wallpaper-info 必须单独运行')
+    if args.install_service and (args.render or args.wallpaper or args.install_wallpaper or args.diagnose or args.fullscreen):parser.error('--install-service 必须单独运行，可指定 --data-dir')
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     if args.render and (args.wallpaper or args.install_wallpaper):parser.error('--render 不能与壁纸模式同时使用')
-    app=(QCoreApplication if args.diagnose or args.install_wallpaper or args.wallpaper_info else QApplication)([sys.argv[0]])
+    app=(QCoreApplication if args.diagnose or args.install_wallpaper or args.wallpaper_info or args.install_service else QApplication)([sys.argv[0]])
     app.setApplicationName('ConwayDesktop');app.setOrganizationName('ConwayWallpaper')
     path=args.data_dir or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
     if args.wallpaper_info:
@@ -38,6 +40,13 @@ def main(argv=None):
             report=read_wallpaper_info(path)
             print(json.dumps(report,ensure_ascii=False,indent=2));return 0
         except Exception as exc:print('无法读取壁纸后台显示信息：',exc,file=sys.stderr);return 1
+    if args.install_service:
+        from .service import install_service
+        try:
+            print('已注册用户服务：',install_service(path))
+            print('已关闭旧 XDG 登录启动项。先从托盘退出旧后台，再执行：\nsystemctl --user daemon-reload\nsystemctl --user enable --now conway-wallpaper.service')
+            return 0
+        except Exception as exc:print('注册服务失败：',exc,file=sys.stderr);return 1
     if args.install_wallpaper:
         from .wallpaper import install_plugin
         try:print('已安装壁纸插件：',install_plugin(path));return 0
@@ -84,7 +93,10 @@ def main(argv=None):
         app.aboutToQuit.connect(server.stop)
     elif args.fullscreen:window.showFullScreen()
     else:window.show()
-    tray=create_tray(window,path)
+    tray=create_tray(window,path);window.tray=tray
+    from .session_lock import SessionLock
+    session_lock=SessionLock(window);window.session_lock=session_lock;session_lock.changed.connect(window.lock_changed)
+    app.aboutToQuit.connect(session_lock.stop)
     # Desktop logout/SIGTERM must save the newest state as well as the periodic checkpoint.
     import signal
     signal.signal(signal.SIGTERM,lambda *_:app.quit());signal.signal(signal.SIGINT,lambda *_:app.quit())

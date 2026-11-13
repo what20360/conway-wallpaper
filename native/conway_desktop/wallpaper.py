@@ -178,6 +178,9 @@ class WallpaperServer(QObject):
         from PySide6.QtGui import QGuiApplication
         return {'backendVersion':VERSION,'clients':list(self.display_clients.values()),
                 'inputCounts':self.input_counts,'lastInput':self.last_input,
+                'countdown':{'remainingSeconds':round(self.view.countdown.remaining,3),'state':self.view.countdown.state,
+                             'locked':self.view.countdown.locked,'status':self.view.countdown.status,
+                             'lockError':getattr(getattr(self.view,'session_lock',None),'error',None)},
                 'inputMethod':{'chinese':self.view.system.state['ime'],'chinesePunctuation':self.view.system.state['punctuation'],
                                'punctuationDiagnostic':self.view.system.ime.diagnostic},
                 'activityPreview':{'image':self.preview.url,'error':self.preview.error} if self.preview else None,
@@ -190,7 +193,7 @@ class WallpaperServer(QObject):
         view=self.view;m=view.m
         fade=zlib.crc32((m.fade/.15).astype(np.uint8).tobytes()) if m.trails else 0
         signature=(tuple(m.settings().items()),zlib.crc32(m.cells.tobytes()),fade,int(view.wall_time),view.desktop_editing,
-                   tuple(view.system.state.items()),tuple(view.system.pending.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
+                   view.countdown.label,view.countdown.status,tuple(view.system.state.items()),tuple(view.system.pending.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
                    zlib.crc32(view.preview.tobytes()) if view.preview is not None else 0,
                    view.hover.x() if view.hover else None,view.hover.y() if view.hover else None,
                    view.storage_failed)
@@ -250,6 +253,8 @@ def autostart_file():return Path(os.environ.get('XDG_CONFIG_HOME',Path.home()/'.
 def set_autostart(enabled,data=None):
     file=autostart_file()
     if not enabled:file.unlink(missing_ok=True);return
+    from .service import service_file
+    if service_file().exists():raise RuntimeError('已注册用户服务；请用 systemctl --user enable/disable conway-wallpaper.service 管理登录自启。')
     # Desktop Entry Exec quoting, not shell quoting.
     command=' '.join('"'+arg.replace('\\','\\\\').replace('"','\\"').replace('`','\\`').replace('$','\\$').replace('%','%%')+'"' for arg in desktop_command(data))
     file.parent.mkdir(parents=True,exist_ok=True)
@@ -266,10 +271,12 @@ def create_tray(view,data=None):
     menu.addAction('打开控制窗口',lambda:(view.showNormal(),view.raise_(),view.activateWindow()))
     menu.addAction('暂停／继续',view.run_toggle);menu.addAction('打开日志目录',view.open_logs)
     if view.wallpaper_mode:
-        auto=menu.addAction('登录时启动壁纸后台');auto.setCheckable(True);auto.setChecked(autostart_file().exists())
+        from .service import service_file
+        managed=service_file().exists()
+        auto=menu.addAction('登录自启由用户服务管理' if managed else '登录时启动壁纸后台');auto.setEnabled(not managed);auto.setCheckable(True);auto.setChecked(autostart_file().exists())
         def toggle(value):
             try:set_autostart(value,data)
-            except OSError as exc:auto.setChecked(not value);view.error('设置自动启动失败：'+str(exc))
+            except (OSError,RuntimeError) as exc:auto.setChecked(not value);view.error('设置自动启动失败：'+str(exc))
         auto.triggered.connect(toggle)
     menu.addSeparator()
     def quit_app():view.wallpaper_mode=False;view.close();QApplication.quit()

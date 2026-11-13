@@ -12,17 +12,26 @@ class Store:
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS checkpoint(id INTEGER PRIMARY KEY CHECK(id=1),data BLOB NOT NULL,settings TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS presets(slot INTEGER PRIMARY KEY CHECK(slot BETWEEN 0 AND 255),data BLOB NOT NULL);
+        CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS backups(id INTEGER PRIMARY KEY,stamp INTEGER NOT NULL,data BLOB NOT NULL);
         ''')
-    def checkpoint(self,model):
+    def checkpoint(self,model,countdown=None):
         blob=encode_life(model.cells,model.preset)
-        with self.db: self.db.execute('INSERT OR REPLACE INTO checkpoint VALUES(1,?,?)',(blob,json.dumps(model.settings())))
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO checkpoint VALUES(1,?,?)',(blob,json.dumps(model.settings())))
+            if countdown is not None:self.db.execute('INSERT OR REPLACE INTO app_state VALUES(?,?)',('countdown',json.dumps(countdown.snapshot())))
     def restore(self,model):
         row=self.db.execute('SELECT data,settings FROM checkpoint WHERE id=1').fetchone()
         if not row: return False
         _,_,cells=decode_life(row[0]); settings=json.loads(row[1])
         if not isinstance(settings,dict): raise ValueError('checkpoint settings')
         model.restore(cells,settings); return True
+    def save_countdown(self,countdown):
+        with self.db:self.db.execute('INSERT OR REPLACE INTO app_state VALUES(?,?)',('countdown',json.dumps(countdown.snapshot())))
+    def restore_countdown(self,countdown):
+        row=self.db.execute('SELECT value FROM app_state WHERE key=?',('countdown',)).fetchone()
+        if row:countdown.restore(json.loads(row[0]));return True
+        return False
     def slot(self,index):
         row=self.db.execute('SELECT data FROM presets WHERE slot=?',(index,)).fetchone()
         return decode_life(row[0])[2] if row else default_cells(index)

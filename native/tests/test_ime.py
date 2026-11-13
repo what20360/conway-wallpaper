@@ -15,7 +15,7 @@ from conway_desktop.view import View
 APP=QApplication.instance() or QApplication([])
 
 class FakeBus:
-    def __init__(self):self.ascii=False;self.punctuation=True;self.engine='rime';self.calls=[];self.failed=False;self.labels=('。，','．，');self.prepared=False;self.menu_path='/MenuBar';self.fail_method=None;self.has_tray=True
+    def __init__(self):self.ascii=False;self.punctuation=True;self.engine='rime';self.calls=[];self.failed=False;self.labels=('。，','．，');self.prepared=False;self.menu_path='/MenuBar';self.fail_method=None;self.has_tray=True;self.ignore_click=False
     def run(self,key,argv,callback,**kwargs):
         self.calls.append(argv);method=argv[8];signature=argv[9] if len(argv)>9 else '';values=argv[10:]
         if self.failed or method==self.fail_method:callback(False,'unavailable');return True
@@ -39,7 +39,7 @@ class FakeBus:
         elif method=='AboutToShow':
             assert argv[6]==self.menu_path
             self.prepared=True;kind='b';value=True
-        elif method=='Event' and values[1]=='clicked':self.punctuation=not self.punctuation
+        elif method=='Event' and values[1]=='clicked' and not self.ignore_click:self.punctuation=not self.punctuation
         callback(True,json.dumps({'type':kind,'data':[value]}) if kind else '');return True
     def stop(self):pass
 
@@ -97,6 +97,24 @@ class InputMethods(unittest.TestCase):
         self.bus.labels=('CustomPrivateMode','UnrecognizedPrivateState');self.system.ime.refresh()
         self.assertEqual(self.system.ime.diagnostic['stage'],'no-recognized-action')
         self.assertNotIn('CustomPrivateMode',str(self.system.ime.diagnostic))
+    def test_english_punctuation_mismatch_and_unavailable_controls_do_not_popup(self):
+        self.bus.ascii=True;self.bus.ignore_click=True;self.system.ime.refresh()
+        with patch('conway_desktop.ime.QTimer.singleShot',side_effect=lambda _,callback:callback()):self.system.ime.toggle_punctuation()
+        self.assertFalse(self.messages);self.assertFalse(self.system.busy);self.assertIs(self.system.state['punctuation'],True)
+        # Verify the Chinese error signal before constructing a view, so the
+        # deliberate failure cannot open a real modal message box in this test.
+        self.bus.ascii=False;self.system.ime.refresh()
+        with patch('conway_desktop.ime.QTimer.singleShot',side_effect=lambda _,callback:callback()):self.system.ime.toggle_punctuation()
+        self.assertEqual(len(self.messages),1)
+        self.bus.ascii=True;self.system.ime.refresh();view=View(Model(),None,self.system)
+        try:
+            with patch.object(view,'error') as error:
+                view.unavailable('status-punctuation');view.unavailable('punctuation');error.assert_not_called()
+        finally:view.timer.stop();self.system.notice.disconnect(view.error);view.deleteLater();APP.processEvents()
+    def test_english_control_failure_stays_quiet_if_service_disappears(self):
+        self.bus.ascii=True;self.system.ime.refresh();self.bus.failed=True
+        self.system.ime.toggle_punctuation()
+        self.assertFalse(self.messages);self.assertFalse(self.system.busy);self.assertIsNone(self.system.state['punctuation'])
     def test_keyboard_to_rime_activates_then_exits_rime_ascii(self):
         self.bus.engine='keyboard-us';self.bus.ascii=True
         with patch('conway_desktop.ime.QTimer.singleShot',side_effect=lambda _,callback:callback()):self.system.ime.toggle_mode()
