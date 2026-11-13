@@ -282,7 +282,11 @@ class WallpaperBridge(unittest.TestCase):
         status,data=self.request('/status');self.assertEqual(status,200);self.assertTrue(json.loads(data)['reloadRequired'])
         path='/status?frontend='+VERSION+'&logicalW=1970&logicalH=1107&screenDpr=2&sourceW=2560&sourceH=1440&imageW=1970&imageH=1107'
         status,data=self.request(path);self.assertEqual(status,200);self.assertFalse(json.loads(data)['reloadRequired'])
+        self.system.state.update(ime=True,punctuation=False)
+        self.system.ime.punctuation_report('ready',menuItems=8,candidates=1,chinese=False)
         status,data=self.request('/display-info');info=json.loads(data)
+        self.assertEqual(info['inputMethod'],{'chinese':True,'chinesePunctuation':False,
+                         'punctuationDiagnostic':{'stage':'ready','menuItems':8,'candidates':1,'chinese':False}})
         self.assertEqual(info['backendVersion'],VERSION);self.assertEqual(info['clients'][-1]['logicalW'],1970)
         self.assertEqual(info['clients'][-1]['sourceH'],1440);self.assertNotIn(self.server.token,data.decode())
         self.assertEqual(self.request('/status?frontend='+VERSION+'&logicalW=nan')[0],400)

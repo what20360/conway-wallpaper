@@ -305,12 +305,11 @@ class View(QWidget):
                 value=state[key];busy=bool(self.system.busy.intersection(('ime','punctuation')))
                 enabled=value is not None
                 region(key,x,437,122,94,lambda action=action:action() if not self.system.busy.intersection(('ime','punctuation')) else None,enabled)
-                p.fillRect(rect(x,437,122,94),t['life'] if value else t['clock'] if value is False else t['off'])
-                color=t['panel'] if value is not None else t['muted']
+                color=t['muted'] if value is None else t['life'] if value else t['clock']
                 text(x+10,443,label,1.8,color)
                 symbols=('中' if value else '英') if key=='ime' else ('￥' if value else '$')
                 text(x+(42 if key=='ime' else 47),466,symbols if value is not None else '?',4,color)
-                if busy:p.fillRect(rect(x,437,122,5),t['speed'])
+                if busy:dot(x+108,443,4,t['speed'])
             for y,name,key in ((563,'down','download'),(607,'up','upload')):
                 icon(24,y,name,t['clock'],3)
                 text(296,y,rate_label(state.get(key)),3,t['clock'],True)

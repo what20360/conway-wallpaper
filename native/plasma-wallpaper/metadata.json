@@ -7,7 +7,7 @@
     "Description": "Native pixel Life wallpaper with integrated system controls",
     "Description[zh_CN]": "原生像素生命游戏与系统控制，需要运行生命场壁纸后台",
     "Icon": "applications-graphics",
-    "Version": "0.3.4",
+    "Version": "0.3.5",
     "License": "MIT",
     "Authors": [{"Name": "what20360"}],
     "Website": "https://github.com/what20360/conway-wallpaper"

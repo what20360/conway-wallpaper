@@ -178,6 +178,8 @@ class WallpaperServer(QObject):
         from PySide6.QtGui import QGuiApplication
         return {'backendVersion':VERSION,'clients':list(self.display_clients.values()),
                 'inputCounts':self.input_counts,'lastInput':self.last_input,
+                'inputMethod':{'chinese':self.view.system.state['ime'],'chinesePunctuation':self.view.system.state['punctuation'],
+                               'punctuationDiagnostic':self.view.system.ime.diagnostic},
                 'activityPreview':{'image':self.preview.url,'error':self.preview.error} if self.preview else None,
                 'nativeWindowLogicalSize':[self.view.width(),self.view.height()],
                 'nativeWindowDpr':self.view.devicePixelRatioF(),

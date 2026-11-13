@@ -9,8 +9,8 @@ from PySide6.QtCore import QObject,QTimer
 from .logging_setup import LOGGER
 
 SERVICE='org.fcitx.Fcitx5';CONTROLLER='org.fcitx.Fcitx.Controller1'
-CHINESE={'。，','，。','中文标点','中文標點','中式标点','中式標點'}
-ENGLISH={'．，','，．','.,',',.','英文标点','英文標點','西文标点','西文標點'}
+CHINESE={'。，','，。','¥','￥','中文标点','中文標點','中式标点','中式標點','Chinese punctuation'}
+ENGLISH={'．，','，．','.,',',.','$','＄','英文标点','英文標點','西文标点','西文標點','English punctuation'}
 
 def unwrap(value):
     if isinstance(value,dict):
@@ -34,18 +34,24 @@ def menu_items(layout):
             yield layout[0],layout[1]
         for item in layout:yield from menu_items(item)
 
-def punctuation_action(layout):
+def punctuation_candidates(layout):
     candidates=[]
     for identifier,props in menu_items(layout):
         if props.get('enabled') is False or props.get('visible') is False:continue
         icon=props.get('icon-name','')
         if icon in ('fcitx-punc-active','fcitx-punc-inactive'):
             candidates.append((identifier,icon=='fcitx-punc-active'));continue
-        label=props.get('label','').replace('&','').strip()
+        label=props.get('label','')
+        if not isinstance(label,str):continue
+        label=label.replace('&','').strip()
         parts=[part.strip() for part in label.split('→')]
         if len(parts)==2 and ((parts[0] in CHINESE and parts[1] in ENGLISH) or (parts[0] in ENGLISH and parts[1] in CHINESE)):
             candidates.append((identifier,parts[0] in CHINESE))
+    return candidates
+
+def punctuation_action(layout):
     # Never guess when several actions match, or when a custom schema hides/renames it.
+    candidates=punctuation_candidates(layout)
     return candidates[0] if len(candidates)==1 else None
 
 def args(service,path,interface,method,signature='',*values):
@@ -53,7 +59,7 @@ def args(service,path,interface,method,signature='',*values):
 
 class Fcitx(QObject):
     def __init__(self,system):
-        super().__init__(system);self.system=system;self.polling=False;self.after=None;self.engine=None;self.menu=None;self.action=None
+        super().__init__(system);self.system=system;self.polling=False;self.after=None;self.engine=None;self.menu=None;self.action=None;self.diagnostic={'stage':'not-read'}
         self.timer=QTimer(self);self.timer.setInterval(1000);self.timer.timeout.connect(self.refresh)
         if system.enabled:self.timer.start();QTimer.singleShot(0,self.refresh)
     def call(self,argv,callback,key='ime-read'):
@@ -74,7 +80,8 @@ class Fcitx(QObject):
             callback=self.after;self.after=None
             if callback:callback()
         def fail():
-            self.system.state.update(ime=None,punctuation=None);self.system.errors['ime']='无法连接 Fcitx5；需要运行 Fcitx5 并提供会话 D-Bus 与 busctl'
+            self.action=None;self.menu=None;self.punctuation_report('service-unavailable')
+            self.system.state.update(ime=None,punctuation=None);self.system.errors['ime']=self.system.errors['punctuation']='无法连接 Fcitx5；需要运行 Fcitx5 并提供会话 D-Bus 与 busctl'
             done()
         def engine_result(active):
             def result(ok,engine):
@@ -95,26 +102,51 @@ class Fcitx(QObject):
             if not ok or type(value) is not int or value not in (0,1,2):fail();return
             self.call(args(SERVICE,'/controller',CONTROLLER,'CurrentInputMethod'),engine_result(value))
         self.call(args(SERVICE,'/controller',CONTROLLER,'State'),state_result)
+    def punctuation_report(self,stage,**fields):
+        # Only counts and recognized states: no full menus, schema names or text.
+        report={'stage':stage,**fields}
+        if report!=self.diagnostic:LOGGER.info('Punctuation availability %s',report)
+        self.diagnostic=report
     def read_punctuation(self,done):
         self.action=None;self.system.state['punctuation']=None
-        self.system.errors['punctuation']='未找到可识别的标点开关；需要 Fcitx5 托盘菜单和方案的标点选项'
+        def unavailable(stage,message,**fields):
+            self.system.errors['punctuation']=message;self.punctuation_report(stage,**fields);done()
         if self.menu:
             service,path=self.menu
             def result(ok,layout):
-                if not ok:self.menu=None
+                if not ok:
+                    self.menu=None;unavailable('layout-unavailable','无法读取 Fcitx5 标点菜单；将重新发现托盘服务。');return
+                candidates=punctuation_candidates(layout);items=sum(1 for _ in menu_items(layout))
+                if len(candidates)==1:
+                    self.action=candidates[0];self.system.state['punctuation']=self.action[1]
+                    self.system.errors.pop('punctuation',None)
+                    self.punctuation_report('ready',menuItems=items,candidates=1,chinese=self.action[1]);done()
                 else:
-                    self.action=punctuation_action(layout)
-                    if self.action:
-                        self.system.state['punctuation']=self.action[1];self.system.errors.pop('punctuation',None)
-                done()
-            self.call(args(service,path,'com.canonical.dbusmenu','GetLayout','iias',0,3,0),result);return
+                    stage='ambiguous-actions' if candidates else 'no-recognized-action'
+                    message='检测到多个标点开关，无法安全判断应操作哪一个。' if candidates else '未找到可识别的标点开关。支持 Rime 的 ¥／$、￥／$、。，／．，标签；请先在可输入文字的窗口中选中 Rime 中文模式。'
+                    unavailable(stage,message,menuItems=items,candidates=len(candidates))
+            def shown(ok,_):
+                if not ok:
+                    self.menu=None;unavailable('menu-initialization-failed','无法初始化 Fcitx5 托盘菜单；将重新发现托盘服务。');return
+                self.call(args(service,path,'com.canonical.dbusmenu','GetLayout','iias',0,3,0),result)
+            # AboutToShow binds Fcitx's menu to its most recent input context.
+            # It does not display a popup or inject a keyboard event.
+            self.call(args(service,path,'com.canonical.dbusmenu','AboutToShow','i',0),shown);return
         def watcher(ok,items):
-            candidates=[v for v in all_strings(items) if re.fullmatch(r'(?::[0-9]+\.[0-9]+|[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)+)/[A-Za-z0-9_/]+',v)][:64] if ok else []
+            if not ok:
+                unavailable('watcher-unavailable','无法读取系统托盘服务；需要 Fcitx5 托盘菜单和会话 D-Bus。');return
+            candidates=[v for v in all_strings(items) if re.fullmatch(r'(?::[0-9]+\.[0-9]+|[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)+)/[A-Za-z0-9_/]+',v)][:64]
             def discover():
-                if not candidates:done();return
+                if not candidates:
+                    unavailable('fcitx-tray-not-found','未发现 Fcitx5 托盘菜单；请确认 Fcitx5 的状态通知器／托盘功能正在运行。');return
                 service,tail=candidates.pop(0).split('/',1);path='/'+tail
+                def menu_path(ok,value):
+                    if not ok or not isinstance(value,str) or not re.fullmatch(r'/(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+',value):
+                        unavailable('menu-path-unavailable','Fcitx5 托盘未提供有效的菜单路径。');return
+                    self.menu=(service,value);self.read_punctuation(done)
                 def identify(ok,value):
-                    if ok and value=='Fcitx':self.menu=(service,'/MenuBar');self.read_punctuation(done)
+                    if ok and value=='Fcitx':
+                        self.call(args(service,path,'org.freedesktop.DBus.Properties','Get','ss','org.kde.StatusNotifierItem','Menu'),menu_path)
                     else:discover()
                 self.call(args(service,path,'org.freedesktop.DBus.Properties','Get','ss','org.kde.StatusNotifierItem','Id'),identify)
             discover()
@@ -128,7 +160,7 @@ class Fcitx(QObject):
             self.system.changed.emit()
         QTimer.singleShot(200,lambda:self.refresh(after=verify))
     def control_failure(self,key):
-        self.system.busy.discard(key);self.system.notice.emit('Fcitx5 操作失败，请确认输入法服务、托盘和当前输入方案。');self.system.changed.emit()
+        self.system.busy.discard(key);self.system.notice.emit(self.system.errors.get(key) or 'Fcitx5 操作失败，请确认输入法服务、托盘和当前输入方案。');self.system.changed.emit()
     def toggle_mode(self):
         key='ime'
         if self.system.busy.intersection(('ime','punctuation')) or not self.system.enabled:return
@@ -159,22 +191,17 @@ class Fcitx(QObject):
         if self.system.busy.intersection(('ime','punctuation')) or not self.system.enabled:return
         self.system.busy.add(key);self.system.changed.emit()
         def perform():
-            if not self.menu:self.control_failure(key);return
-            service,path=self.menu
-            def shown(ok,_):
-                if not ok:self.control_failure(key);return
-                def refreshed():
-                    if not self.action:self.control_failure(key);return
-                    identifier,current=self.action
-                    LOGGER.info('Punctuation requested chinese=%s',not current)
-                    def clicked(ok,_):
-                        if not ok:self.control_failure(key);return
-                        def close_menu():
-                            self.call(args(service,path,'com.canonical.dbusmenu','Event','isvu',0,'closed','i',0,0),
-                                      lambda ok,_:self.finish_control(key,not current),'ime-control')
-                        QTimer.singleShot(100,close_menu)
-                    self.call(args(service,path,'com.canonical.dbusmenu','Event','isvu',identifier,'clicked','i',0,0),clicked,'ime-control')
-                self.read_punctuation(refreshed)
-            self.call(args(service,path,'com.canonical.dbusmenu','AboutToShow','i',0),shown,'ime-control')
+            def refreshed():
+                if not self.action or not self.menu:self.control_failure(key);return
+                service,path=self.menu;identifier,current=self.action
+                LOGGER.info('Punctuation requested chinese=%s',not current)
+                def clicked(ok,_):
+                    if not ok:self.control_failure(key);return
+                    def close_menu():
+                        self.call(args(service,path,'com.canonical.dbusmenu','Event','isvu',0,'closed','i',0,0),
+                                  lambda ok,_:self.finish_control(key,not current),'ime-control')
+                    QTimer.singleShot(100,close_menu)
+                self.call(args(service,path,'com.canonical.dbusmenu','Event','isvu',identifier,'clicked','i',0,0),clicked,'ime-control')
+            self.read_punctuation(refreshed)
         self.refresh(after=perform)
     def stop(self):self.timer.stop();self.after=None
