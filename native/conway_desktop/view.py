@@ -7,10 +7,11 @@ import time
 import numpy as np
 from PySide6.QtCore import Qt,QTimer,QPoint,QRect,QRectF,QUrl
 from PySide6.QtGui import QColor,QImage,QPainter,QPen,QFont,QDesktopServices
-from PySide6.QtWidgets import QWidget,QFileDialog,QMessageBox,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QSpinBox,QPushButton,QSystemTrayIcon
+from PySide6.QtWidgets import QApplication,QWidget,QFileDialog,QMessageBox,QDialog,QVBoxLayout,QHBoxLayout,QLabel,QSpinBox,QPushButton,QCheckBox,QSystemTrayIcon
 from .model import W,H,SPEEDS,SPEED_LABELS,PALETTES,random_cells,default_cells,Clock
 from .formats import encode_life,decode_life
 from .countdown import Countdown
+from .notifications import CountdownNotification
 from .logging_setup import LOGGER,log_dir
 
 PIXELS=json.loads(Path(__file__).with_name('pixels.json').read_text())
@@ -77,11 +78,14 @@ class View(QWidget):
     def __init__(self,model,store,system):
         super().__init__();self.m=model;self.store=store;self.system=system
         self.countdown=Countdown();self.tray=None;self._reminder_box=None
+        self.countdown_notification=CountdownNotification(system.commands,self._tray_reminder)
+        self.reminder_timer=QTimer(self);self.reminder_timer.setInterval(15000)
+        self.reminder_timer.timeout.connect(self.pulse_reminder)
         if store:
             try:store.restore_countdown(self.countdown)
             except Exception:LOGGER.exception('Countdown checkpoint invalid; using an idle timer')
         self.clock=Clock();self.stroke=None;self.hover=None;self.regions=[];self.last_save=0;self.wallpaper_mode=False;self.desktop_editing=False
-        self.page='bank';self.deck='patterns';self.backup_index=0;self.preview=None;self._grid_cache=None
+        self.page='bank';self.deck='information';self.backup_index=0;self.preview=None;self._grid_cache=None
         self._ssid_cache=None;self._ssid_rect=None;self.feedback=False;self.storage_failed=False;self.last_frame=time.monotonic();self.wall_time=time.time()
         self.setWindowTitle('生命场 · 原生实验版');self.setMinimumSize(640,360)
         self.setMouseTracking(True);self.resize(1280,720)
@@ -133,38 +137,73 @@ class View(QWidget):
         if self.store and now-self.last_save>=10:self.checkpoint()
         self.update()
     def lock_changed(self,value):
-        self.countdown.set_locked(value);self.checkpoint();self.update()
-    def remind_countdown(self):
-        LOGGER.info('Countdown completed duration=%s',self.countdown.duration)
-        title='生命场 · 倒计时结束';message='设定的倒计时已结束。'
+        self.countdown.set_locked(value)
+        if value is not False:
+            self.reminder_timer.stop()
+            if self._reminder_box:self._reminder_box.hide()
+        elif self.countdown.unacknowledged and not self.countdown.pending:
+            self.show_reminder_box();self.pulse_reminder()
+        self.checkpoint();self.update()
+    def _tray_reminder(self,title,message):
         if self.tray and QSystemTrayIcon.supportsMessages():
-            self.tray.showMessage(title,message,QSystemTrayIcon.MessageIcon.Information,10000)
-        else:
-            if self._reminder_box:self._reminder_box.close()
-            box=QMessageBox(QMessageBox.Icon.Information,title,message,QMessageBox.StandardButton.Ok,self)
-            self._reminder_box=box;box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-            def cleared(*_):
-                if self._reminder_box is box:self._reminder_box=None
-            box.destroyed.connect(cleared);box.setWindowModality(Qt.WindowModality.NonModal);box.show()
+            self.tray.showMessage(title,message,QSystemTrayIcon.MessageIcon.Critical,0)
+    def reminder_message(self):
+        timer=self.countdown
+        message=f'已完成 {timer.rounds} 轮倒计时，其中 {timer.unacknowledged} 轮尚未确认。'
+        message+='\n下一轮已自动开始；确认提醒不会暂停计时。' if timer.repeat and timer.state=='running' else '\n请确认此提醒。'
+        return message
+    def show_reminder_box(self):
+        if self.countdown.locked is not False or not self.countdown.unacknowledged:return
+        if not self._reminder_box:
+            box=QMessageBox(QMessageBox.Icon.Warning,'生命场 · 倒计时结束','',QMessageBox.StandardButton.Ok,self)
+            box.button(QMessageBox.StandardButton.Ok).setText('已知晓')
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint,True)
+            box.setWindowModality(Qt.WindowModality.NonModal)
+            self._reminder_box=box
+            box.finished.connect(lambda *_:self.acknowledge_countdown() if self._reminder_box is box else None)
+        self._reminder_box.setText(self.reminder_message());self._reminder_box.show()
+        self._reminder_box.raise_();self.reminder_timer.start()
+    def pulse_reminder(self):
+        if self.countdown.locked is not False or not self.countdown.unacknowledged:return
+        QApplication.beep()
+        if self._reminder_box:QApplication.alert(self._reminder_box,0)
+    def clear_reminder(self):
+        self.reminder_timer.stop();self.countdown_notification.clear()
+        if self._reminder_box:
+            box=self._reminder_box;self._reminder_box=None
+            box.blockSignals(True);box.close();box.deleteLater()
+    def acknowledge_countdown(self):
+        self.countdown.acknowledge();self.clear_reminder();self.checkpoint();self.update()
+    def remind_countdown(self):
+        LOGGER.info('Countdown completed duration=%s repeat=%s rounds=%s unacknowledged=%s',
+                    self.countdown.duration,self.countdown.repeat,self.countdown.rounds,self.countdown.unacknowledged)
+        self.countdown_notification.show('生命场 · 倒计时结束',self.reminder_message())
+        self.show_reminder_box();self.pulse_reminder()
     def configure_countdown(self):
         dialog=QDialog(self);dialog.setWindowTitle('设定倒计时');dialog.setMinimumWidth(380)
-        layout=QVBoxLayout(dialog);layout.addWidget(QLabel('锁屏时自动暂停，解锁后继续；结束后通知。',dialog))
+        layout=QVBoxLayout(dialog);layout.addWidget(QLabel('锁屏时自动暂停，解锁后继续；结束后持续提醒。',dialog))
         row=QHBoxLayout();fields=[];seconds=self.countdown.duration
         for name,label,value,maximum in (('hours','小时',seconds//3600,999),('minutes','分钟',seconds//60%60,59),('seconds','秒',seconds%60,59)):
             spin=QSpinBox(dialog);spin.setObjectName(name);spin.setRange(0,maximum);spin.setValue(value);spin.setSuffix(' '+label)
             fields.append(spin);row.addWidget(spin)
-        layout.addLayout(row);hint=QLabel('',dialog);layout.addWidget(hint)
+        layout.addLayout(row)
+        repeat=QCheckBox('循环：结束后自动开始下一轮',dialog);repeat.setObjectName('repeat')
+        repeat.setChecked(self.countdown.repeat);layout.addWidget(repeat)
+        def repeat_changed(checked):self.countdown.set_repeat(checked);self.checkpoint();self.update()
+        repeat.toggled.connect(repeat_changed)
+        hint=QLabel('',dialog);layout.addWidget(hint)
         buttons=QHBoxLayout()
         def button(name,label,action,enabled=True):
             item=QPushButton(label,dialog);item.setObjectName(name);item.setEnabled(enabled);item.clicked.connect(action);buttons.addWidget(item)
         def start():
             hours,minutes,seconds=(spin.value() for spin in fields);total=hours*3600+minutes*60+seconds
             if not total:hint.setText('请设定大于零的时长。');return
-            self.countdown.start(total);self.checkpoint();self.update();dialog.accept()
+            self.countdown.start(total);self.clear_reminder();self.checkpoint();self.update();dialog.accept()
         def pause_resume():
             self.countdown.pause() if self.countdown.state=='running' else self.countdown.resume()
             self.checkpoint();self.update();dialog.accept()
-        def cancel():self.countdown.cancel();self.checkpoint();self.update();dialog.accept()
+        def cancel():self.countdown.cancel();self.clear_reminder();self.checkpoint();self.update();dialog.accept()
         button('start','开始／重新开始',start)
         button('pause','继续' if self.countdown.state=='paused' else '暂停',pause_resume,self.countdown.state in ('running','paused'))
         button('cancel','取消倒计时',cancel,self.countdown.state!='idle');button('close','关闭',dialog.reject)
@@ -359,8 +398,9 @@ class View(QWidget):
                 if busy:dot(x+108,443,4,t['speed'])
             timer=self.countdown
             region('countdown',24,535,272,79,self.configure_countdown)
-            ink=t['speed'] if timer.status=='RUN' else t['clock'] if timer.status=='DONE' else t['muted']
-            text(34,539,'TIMER',1.8,ink);text(286,539,timer.status,1.8,ink,True)
+            ink=t['danger'] if timer.unacknowledged else t['speed'] if timer.status=='RUN' else t['clock'] if timer.status=='DONE' else t['muted']
+            text(34,539,'TIMER LOOP' if timer.repeat else 'TIMER',1.8,ink)
+            text(286,539,'ALERT' if timer.unacknowledged else timer.status,1.8,ink,True)
             size=max(1,round(4*unit));length=sum((GLYPHS.get(ch,GLYPHS['?'])['w']+1)*size for ch in timer.label)-size
             text(160-length/(2*unit),565,timer.label,4,ink)
             for x,name,key in ((24,'down','download'),(174,'up','upload')):

@@ -235,7 +235,7 @@ class WallpaperBridge(unittest.TestCase):
             self.view.render_image(frame.property('frameWidth'),frame.property('frameHeight'))
             button=next(rect for rect,_,name in self.view.regions if name=='page-switch')
             item.enqueue('press',button.center().x(),button.center().y(),False)
-            self.wait_until(lambda:self.view.deck=='information')
+            self.wait_until(lambda:self.view.deck=='patterns')
             item.enqueue('release',button.center().x(),button.center().y(),False)
     def test_user_130_percent_rounding_keeps_full_2k_canvas(self):
         from conway_desktop.view import geometry
@@ -259,7 +259,7 @@ class WallpaperBridge(unittest.TestCase):
             self.view.render_image(2560,1440)
             button=next(rect for rect,_,name in self.view.regions if name=='page-switch')
             QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(button.center().x()//2,button.center().y()//2))
-            self.wait_until(lambda:self.view.deck=='information')
+            self.wait_until(lambda:self.view.deck=='patterns')
             self.assertEqual(desktop.property('pressCount'),0)
             QTest.mouseClick(window,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier,QPoint(100,100))
             self.assertEqual(desktop.property('pressCount'),1);self.assertFalse(self.model.cells.any())

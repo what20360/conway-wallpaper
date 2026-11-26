@@ -179,6 +179,8 @@ class WallpaperServer(QObject):
         return {'backendVersion':VERSION,'clients':list(self.display_clients.values()),
                 'inputCounts':self.input_counts,'lastInput':self.last_input,
                 'countdown':{'remainingSeconds':round(self.view.countdown.remaining,3),'state':self.view.countdown.state,
+                             'repeat':self.view.countdown.repeat,'completedRounds':self.view.countdown.rounds,
+                             'unacknowledgedRounds':self.view.countdown.unacknowledged,
                              'locked':self.view.countdown.locked,'status':self.view.countdown.status,
                              'lockError':getattr(getattr(self.view,'session_lock',None),'error',None)},
                 'inputMethod':{'chinese':self.view.system.state['ime'],'chinesePunctuation':self.view.system.state['punctuation'],
@@ -193,7 +195,8 @@ class WallpaperServer(QObject):
         view=self.view;m=view.m
         fade=zlib.crc32((m.fade/.15).astype(np.uint8).tobytes()) if m.trails else 0
         signature=(tuple(m.settings().items()),zlib.crc32(m.cells.tobytes()),fade,int(view.wall_time),view.desktop_editing,
-                   view.countdown.label,view.countdown.status,tuple(view.system.state.items()),tuple(view.system.pending.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
+                   view.countdown.label,view.countdown.status,view.countdown.repeat,view.countdown.unacknowledged,
+                   tuple(view.system.state.items()),tuple(view.system.pending.items()),frozenset(view.system.busy),view.deck,view.page,view.backup_index,
                    zlib.crc32(view.preview.tobytes()) if view.preview is not None else 0,
                    view.hover.x() if view.hover else None,view.hover.y() if view.hover else None,
                    view.storage_failed)

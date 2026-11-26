@@ -16,6 +16,7 @@ class Native(unittest.TestCase):
     def setUp(self):self.model=Model();self.system=System(False);self.view=View(self.model,None,self.system)
     def tearDown(self):self.view.timer.stop();self.system.stop();self.view.deleteLater();APP.processEvents()
     def test_physical_layouts(self):
+        self.view.deck='patterns'
         for w,h,k in [(1920,1080,6),(2560,1440,8)]:
             self.assertEqual(geometry(w,h),(k,0,0))
             image=self.view.render_image(w,h)
@@ -40,6 +41,7 @@ class Native(unittest.TestCase):
             event=QMouseEvent(QMouseEvent.Type.MouseButtonPress,point,point,Qt.MouseButton.LeftButton,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
             self.view.mousePressEvent(event);self.assertEqual(self.model.speed,speed)
     def test_large_preview_keeps_grid_aspect_ratio(self):
+        self.view.deck='patterns'
         import numpy as np
         self.view.preview=np.ones((180,256),dtype=np.uint8)
         image=self.view.render_image(1920,1080)
